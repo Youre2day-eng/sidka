@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sidka Setup</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:     #0e0e0e;
+    --bg2:    #1a1a1a;
+    --bg3:    #222;
+    --border: #2e2e2e;
+    --text:   #e8e8e8;
+    --dim:    #666;
+    --mid:    #999;
+    --acc:    #7c6af7;
+    --green:  #58a058;
+    --red:    #e05050;
+    --amber:  #d4a020;
+  }
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    -webkit-app-region: no-drag;
+  }
+  .logo {
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    color: var(--acc);
+    margin-bottom: 6px;
+  }
+  .tagline {
+    font-size: 13px;
+    color: var(--dim);
+    margin-bottom: 32px;
+  }
+  .card {
+    width: 100%;
+    max-width: 440px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .step {
+    display: none;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .step.active { display: flex; }
+  .step-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .step-body {
+    font-size: 13px;
+    color: var(--mid);
+    line-height: 1.6;
+  }
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    padding: 10px 14px;
+    background: var(--bg3);
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  }
+  .dot.ok     { background: var(--green); }
+  .dot.fail   { background: var(--red); }
+  .dot.spin   { background: var(--amber); animation: pulse 1s infinite; }
+  .dot.idle   { background: var(--dim); }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
+
+  .model-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.12s;
+  }
+  .model-option:hover  { border-color: var(--acc); }
+  .model-option.chosen { border-color: var(--acc); background: #1a1830; }
+  .model-option input  { margin-top: 3px; accent-color: var(--acc); }
+  .model-name   { font-size: 13px; font-weight: 600; }
+  .model-detail { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  .progress-bar {
+    height: 6px;
+    background: var(--bg3);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: var(--acc);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+    width: 0%;
+  }
+  .progress-label {
+    font-size: 11px;
+    color: var(--dim);
+    text-align: center;
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    transition: opacity 0.12s;
+  }
+  button:hover { opacity: 0.85; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .btn-primary  { background: var(--acc); color: #fff; }
+  .btn-ghost    { background: var(--bg3); color: var(--mid); border: 1px solid var(--border); }
+  .btn-green    { background: var(--green); color: #fff; }
+  .btn-row      { display: flex; gap: 10px; }
+
+  a { color: var(--acc); text-decoration: underline; cursor: pointer; }
+  .err { color: var(--red); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="logo">Sidka</div>
+<p class="tagline">local AI developer cockpit — zero cost, runs on your machine</p>
+
+<div class="card">
+
+  <!-- STEP 1: Check Ollama -->
+  <div class="step active" id="step1">
+    <div class="step-title">Checking your setup…</div>
+    <div class="status-row">
+      <div class="dot spin" id="ollamaDot"></div>
+      <span id="ollamaLabel">Looking for Ollama…</span>
+    </div>
+    <div id="ollamaInstallBox" style="display:none">
+      <div class="step-body" style="margin-bottom:12px">
+        Sidka needs <strong>Ollama</strong> to run AI locally — it's free and takes about 2 minutes to install.
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" onclick="openOllama()">Get Ollama (free ↗)</button>
+        <button class="btn-ghost"   onclick="recheckOllama()">I installed it — check again</button>
+      </div>
+    </div>
+    <button class="btn-primary" id="toStep2Btn" style="display:none" onclick="showStep(2)">
+      Ollama is ready — continue →
+    </button>
+  </div>
+
+  <!-- STEP 2: Choose model -->
+  <div class="step" id="step2">
+    <div class="step-title">Choose your AI model</div>
+    <div class="step-body">Downloaded once, runs forever on your machine. No API key needed.</div>
+
+    <label class="model-option chosen" id="opt-fast" onclick="selectModel('qwen2.5:1.5b')">
+      <input type="radio" name="model" value="qwen2.5:1.5b" checked>
+      <div>
+        <div class="model-name">qwen2.5:1.5b &nbsp;<span style="font-size:10px;color:var(--green);background:#0a2010;padding:1px 6px;border-radius:6px">FAST · RECOMMENDED</span></div>
+        <div class="model-detail">~900 MB download · great for chat, fast replies · works on 8 GB RAM</div>
+      </div>
+    </label>
+
+    <label class="model-option" id="opt-full" onclick="selectModel('qwen2.5-coder:7b')">
+      <input type="radio" name="model" value="qwen2.5-coder:7b">
+      <div>
+        <div class="model-name">qwen2.5-coder:7b</div>
+        <div class="model-detail">~4.7 GB download · stronger code generation · needs 16 GB RAM</div>
+      </div>
+    </label>
+
+    <div class="btn-row">
+      <button class="btn-ghost" onclick="showStep(1)">← back</button>
+      <button class="btn-primary" id="pullBtn" onclick="startPull()">Download &amp; install →</button>
+    </div>
+  </div>
+
+  <!-- STEP 3: Pulling model -->
+  <div class="step" id="step3">
+    <div class="step-title">Downloading model…</div>
+    <div class="step-body" id="pullModelName">This may take a few minutes depending on your connection.</div>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-label" id="progressLabel">Starting download…</div>
+    <p class="err" id="pullErr" style="display:none"></p>
+  </div>
+
+  <!-- STEP 4: Done -->
+  <div class="step" id="step4">
+    <div class="step-title">Sidka is ready</div>
+    <div class="step-body">
+      Your local AI is installed and running. Everything stays on your machine — no cloud, no subscriptions.
+    </div>
+    <div class="status-row">
+      <div class="dot ok"></div>
+      <span>Ollama running locally</span>
+    </div>
+    <div class="status-row">
+      <div class="dot ok"></div>
+      <span id="modelReadyLabel">Model ready</span>
+    </div>
+    <button class="btn-green" onclick="launch()">Launch Sidka →</button>
+  </div>
+
+</div><!-- card -->
+
+<script>
+let chosenModel = 'qwen2.5:1.5b';
+
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById('step' + n).classList.add('active');
+}
+
+function openOllama() {
+  window.sidka.openUrl('https://ollama.ai');
+}
+
+async function recheckOllama() {
+  document.getElementById('ollamaDot').className = 'dot spin';
+  document.getElementById('ollamaLabel').textContent = 'Checking again…';
+  document.getElementById('ollamaInstallBox').style.display = 'none';
+  const ok = await window.sidka.checkOllama();
+  if (ok) {
+    document.getElementById('ollamaDot').className = 'dot ok';
+    document.getElementById('ollamaLabel').textContent = 'Ollama is running';
+    document.getElementById('toStep2Btn').style.display = 'block';
+  } else {
+    document.getElementById('ollamaDot').className = 'dot fail';
+    document.getElementById('ollamaLabel').textContent = 'Ollama not found — make sure it is running after install';
+    document.getElementById('ollamaInstallBox').style.display = 'block';
+  }
+}
+
+function selectModel(model) {
+  chosenModel = model;
+  document.getElementById('opt-fast').classList.toggle('chosen', model === 'qwen2.5:1.5b');
+  document.getElementById('opt-full').classList.toggle('chosen', model === 'qwen2.5-coder:7b');
+}
+
+async function startPull() {
+  showStep(3);
+  document.getElementById('pullModelName').textContent =
+    `Downloading ${chosenModel} — this may take a few minutes.`;
+
+  // Animate progress bar (we don't get real bytes from ollama CLI, fake it)
+  let pct = 0;
+  const tick = setInterval(() => {
+    if (pct < 88) { pct += Math.random() * 2; setProgress(pct); }
+  }, 600);
+
+  try {
+    await window.sidka.pullModel(chosenModel);
+    clearInterval(tick);
+    setProgress(100);
+    document.getElementById('progressLabel').textContent = 'Download complete!';
+    document.getElementById('modelReadyLabel').textContent = chosenModel + ' ready';
+    setTimeout(() => showStep(4), 700);
+  } catch (err) {
+    clearInterval(tick);
+    document.getElementById('pullErr').textContent = 'Download failed: ' + err.message;
+    document.getElementById('pullErr').style.display = 'block';
+    document.getElementById('progressLabel').textContent = 'Try again from step 2.';
+  }
+}
+
+function setProgress(pct) {
+  document.getElementById('progressFill').style.width = Math.min(100, pct).toFixed(1) + '%';
+  document.getElementById('progressLabel').textContent = Math.floor(pct) + '% — hang tight…';
+}
+
+function launch() {
+  window.sidka.wizardComplete();
+}
+
+// Auto-run Ollama check when wizard opens
+(async () => {
+  const ok = await window.sidka.checkOllama();
+  if (ok) {
+    document.getElementById('ollamaDot').className = 'dot ok';
+    document.getElementById('ollamaLabel').textContent = 'Ollama is running';
+    document.getElementById('toStep2Btn').style.display = 'block';
+  } else {
+    document.getElementById('ollamaDot').className = 'dot fail';
+    document.getElementById('ollamaLabel').textContent = 'Ollama not found';
+    document.getElementById('ollamaInstallBox').style.display = 'block';
+  }
+})();
+</script>
+</body>
+</html>

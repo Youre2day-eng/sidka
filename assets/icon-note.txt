@@ -1,0 +1,13 @@
+icon.png is a placeholder (solid #7c6af7 square).
+
+Before building the distributable:
+  Mac: replace with icon.icns (512x512 + retina variants)
+  Win: replace with icon.ico  (256x256 multi-resolution)
+
+To generate from a 1024x1024 PNG:
+  Mac: use iconutil or makeicns
+       mkdir icon.iconset
+       sips -z 512 512 icon.png --out icon.iconset/icon_512x512.png
+       iconutil -c icns icon.iconset -o icon.icns
+  Win: use ImageMagick:
+       convert icon.png -resize 256x256 icon.ico

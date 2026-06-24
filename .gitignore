@@ -1,0 +1,38 @@
+## Electron / Node
+node_modules/
+dist/
+out/
+
+## Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+build/
+*.spec
+
+## Runtime data (user-specific, stays in ~/.runai/)
+src/sessions/
+src/*.jsonl
+src/index.json
+src/secrets.json
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+## Secrets
+*.pem
+*.key
+secrets.json
+.env
+.env.local
