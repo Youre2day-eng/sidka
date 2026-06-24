@@ -234,25 +234,140 @@ def cookbook_block(query, k=4):
         parts.append(f"--- {r['title']}  [{r.get('lang','')}]  (use when: {r.get('when','')})\n{r['code']}")
     return "\n\n".join(parts)
 
-def cookbook_learn(title, code, lang="html", tags=None, kind="learned"):
-    """Append a clean, working artifact as a new recipe (deduped by code hash)."""
+def cookbook_learn(title, code, lang="html", tags=None, kind="learned",
+                   verified=False, source="learned", when=None, score=None):
+    """Append a clean, working artifact as a new recipe (deduped by code hash).
+    Headlessly-verified recipes (source='grown') outrank passive 'learned' ones."""
     code = (code or "").strip()
     if len(code) < 60:
         return None
     import hashlib
-    h = "lr_" + hashlib.sha1(code.encode("utf-8")).hexdigest()[:10]
+    prefix = "gr_" if source == "grown" else "lr_"
+    h = prefix + hashlib.sha1(code.encode("utf-8")).hexdigest()[:10]
     existing = load_cookbook()
     if any(r.get("id") == h for r in existing):
         return h  # already learned
     if not tags:
         tags = _tok(title)[:8] or ["learned"]
+    if score is None:
+        score = 5 if verified else 3
     rec = {"id": h, "title": title[:80] or "Learned snippet", "tags": tags, "lang": lang,
-           "when": "Learned from a preview that ran clean.", "code": code,
-           "source": "learned", "kind": kind, "score": 3}
+           "when": when or "Learned from a preview that ran clean.", "code": code,
+           "source": source, "kind": kind, "score": score, "verified": bool(verified)}
     os.makedirs(os.path.dirname(COOKBOOK_FILE), exist_ok=True)
     with open(COOKBOOK_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return h
+
+
+# ---------------------------------------------------------------- self-seeding (grow)
+# Generate recipes with the local build model and VERIFY them headlessly (pure-Node
+# DOM/canvas/WebGL shim + N rAF frames, no browser) before learning. This is what
+# lets the cookbook seed and improve itself instead of relying on hand-coded seeds.
+GROW_DIR  = os.path.join(RUNAI_DIR, "grow")
+GROW_SHIM = os.path.join(GROW_DIR, "_shim.mjs")
+TARGETS_FILE = os.path.join(RUNAI_DIR, "cookbook_targets.jsonl")
+
+# element-with-id (quoted or unquoted) OR an inline <script> body, matched in order
+_GROW_TOKEN = re.compile(
+    r"""<(?P<tag>\w+)[^>]*?\bid\s*=\s*(?:["'](?P<idq>[^"']+)["']|(?P<idu>[\w\-]+))[^>]*?>"""
+    r"""|<script\b(?P<sattrs>[^>]*)>(?P<body>.*?)</script>""",
+    re.S | re.I)
+
+def _grow_candidate(html):
+    """Build the Node candidate module: interleave __reveal() calls in document
+    order so synchronous getElementById sees only elements parsed before its
+    <script> (faithfully reproducing the script-before-element null bug)."""
+    parts, pending = [], {}
+    for m in _GROW_TOKEN.finditer(html):
+        if m.group("body") is not None:
+            if "src" in (m.group("sattrs") or "").lower():
+                continue
+            if pending:
+                parts.append("__reveal(" + json.dumps(pending) + ");")
+                pending = {}
+            parts.append("\n" + m.group("body") + "\n;")
+        else:
+            iid = m.group("idq") or m.group("idu")
+            pending[iid] = "canvas" if m.group("tag").lower() == "canvas" else "el"
+    if pending:
+        parts.append("__reveal(" + json.dumps(pending) + ");")
+    return "\n".join(parts)
+
+def grow_verify(html, frames=120, timeout=10):
+    """Returns (passed, detail). Two stages, headless, no browser:
+    1. node --check every inline <script> body (syntax).
+    2. run the order-aware candidate under the DOM shim for `frames` rAF ticks.
+    PASS iff syntax-clean AND the shim prints SMOKE_OK at exit 0 within timeout."""
+    import subprocess
+    if "<script" not in (html or "").lower():
+        return False, "no inline script"
+    js = _grow_candidate(html)
+    if not js.strip():
+        return False, "no runnable script body"
+    os.makedirs(GROW_DIR, exist_ok=True)
+    cand = os.path.join(GROW_DIR, "_candidate.mjs")
+    with open(cand, "w", encoding="utf-8") as f:
+        f.write(js)
+    chk = subprocess.run(["node", "--check", cand], capture_output=True, text=True)
+    if chk.returncode != 0:
+        lines = chk.stderr.strip().splitlines()
+        return False, "syntax: " + (lines[-2] if len(lines) > 1 else (lines[-1] if lines else "?"))[:160]
+    try:
+        run = subprocess.run(["node", GROW_SHIM, cand, str(frames)],
+                             capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, "timeout/hang (likely an infinite loop)"
+    if run.returncode == 0 and "SMOKE_OK" in run.stdout:
+        return True, "ok"
+    errs = (run.stdout + run.stderr).strip().splitlines()
+    throw = next((l for l in errs if "SMOKE_THROW" in l), errs[-1] if errs else "fail")
+    return False, throw.replace("SMOKE_THROW", "").strip()[:160]
+
+def _extract_doc(text):
+    """Pull a single <!doctype html>...</html> document out of a model reply."""
+    m = re.search(r"<!doctype html.*?</html\s*>", text, re.S | re.I)
+    if m:
+        return m.group(0)
+    m = re.search(r"```(?:html)?\s*(.*?)```", text, re.S)
+    return m.group(1).strip() if m else text.strip()
+
+def grow_generate(target, hint_tags=None, prior_error=""):
+    """Ask the build model for ONE self-contained HTML recipe for `target`,
+    composing the cookbook blocks already retrieved for it. On retry, feed the
+    captured verifier error back as a fix directive."""
+    block = cookbook_block(target)
+    sys_prompt = (SYSTEM_PROMPTS.get("build") or SYSTEM_PROMPTS["fast"]) + _AGENT_CAPABILITIES
+    if block:
+        sys_prompt += "\n\n" + block
+    user = (
+        f"Produce a COMPLETE, self-contained <!doctype html> single-file app for: {target}.\n"
+        "All CSS and JS inline, NO external dependencies or CDNs. Put <script> at the END of "
+        "<body> (after the elements). It MUST run with zero uncaught errors for the first "
+        "second. Define every function you call and actually start the loop. Output ONLY the "
+        "HTML document."
+    )
+    if prior_error:
+        user += f"\n\nThe previous attempt FAILED verification with:\n{prior_error}\nReturn a corrected FULL document."
+    msgs = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}]
+    text = _gen_text(_guard(lambda: ollama.chat(model=MODELS["build"], messages=msgs)))
+    return _extract_doc(text)
+
+def grow_one(target, tags=None, kind="gold", max_attempts=3):
+    """Generate -> verify -> (retry with the error) -> learn. Only verified
+    artifacts are written, so a failing target poisons nothing."""
+    tags = tags or _tok(target)[:8]
+    prior = ""
+    for attempt in range(1, max_attempts + 1):
+        html = grow_generate(target, tags, prior)
+        ok, detail = grow_verify(html)
+        if ok:
+            rid = cookbook_learn(target, html, lang="html", tags=tags, kind=kind,
+                                 verified=True, source="grown",
+                                 when=f"Self-generated and headlessly verified ({attempt} attempt(s)).")
+            return {"status": "passed", "id": rid, "attempts": attempt, "len": len(html)}
+        prior = detail
+    return {"status": "failed", "reason": prior, "attempts": max_attempts}
 
 # runtime-only state (not persisted)
 RT = {"override": None, "agent": False, "rag": True, "file": None}  # file = (name, content)

@@ -32,7 +32,7 @@
       {
         "from": "src/",
         "to": "server/",
-        "filter": ["**/*.py", "cookbook.jsonl"]
+        "filter": ["**/*.py", "cookbook.jsonl", "cookbook_targets.jsonl", "grow/**"]
       }
     ],
     "mac": {

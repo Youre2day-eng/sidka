@@ -930,16 +930,99 @@ def api_cookbook_learn():
     title = (d.get("title") or "").strip()
     if not code.strip():
         return jsonify(error="no code"), 400
+    # double-check headlessly: a browser-clean artifact that also survives the
+    # Node DOM shim is marked verified (higher rank) rather than just 'learned'.
+    verified = False
+    try:
+        verified, _ = eng.grow_verify(code)
+    except Exception:
+        pass
     rid = eng.cookbook_learn(title or "Learned artifact", code,
-                             lang=d.get("lang", "html"), tags=d.get("tags"))
-    return jsonify(ok=bool(rid), id=rid)
+                             lang=d.get("lang", "html"), tags=d.get("tags"),
+                             verified=verified)
+    return jsonify(ok=bool(rid), id=rid, verified=verified)
 
 
 @app.route("/api/cookbook", methods=["GET"])
 def api_cookbook_list():
     """List recipes (id/title/kind/source/tags) for inspection in the UI."""
-    return jsonify([{k: r.get(k) for k in ("id", "title", "kind", "source", "tags", "lang")}
+    return jsonify([{k: r.get(k) for k in ("id", "title", "kind", "source", "tags", "lang", "verified")}
                     for r in eng.load_cookbook()])
+
+
+@app.route("/api/cookbook/grow", methods=["POST"])
+def api_cookbook_grow():
+    """Self-seed: generate a recipe for a target with the local model and learn it
+    ONLY if it passes headless verification. {target} grows one; else grows the next
+    pending manifest target. Runs synchronously (one model call + retries)."""
+    d = request.get_json(force=True) or {}
+    target = (d.get("target") or "").strip()
+    kind = d.get("kind", "gold")
+    attempts = int(d.get("attempts") or 3)
+    if not target:
+        # pull the next pending target from the manifest
+        tgt = _next_pending_target()
+        if not tgt:
+            return jsonify(error="no target given and no pending manifest targets"), 400
+        target, kind = tgt["target"], tgt.get("kind", "gold")
+        res = eng.grow_one(target, tags=tgt.get("tags"), kind=kind, max_attempts=attempts)
+        _mark_target(target, res)
+        return jsonify(target=target, **res)
+    res = eng.grow_one(target, kind=kind, max_attempts=attempts)
+    return jsonify(target=target, **res)
+
+
+@app.route("/api/cookbook/targets", methods=["GET", "POST"])
+def api_cookbook_targets():
+    """List the grow manifest, or append a new target {target, tags?, kind?}."""
+    path = os.path.join(eng.RUNAI_DIR, "cookbook_targets.jsonl")
+    if request.method == "POST":
+        d = request.get_json(force=True) or {}
+        if not d.get("target"):
+            return jsonify(error="target required"), 400
+        row = {"target": d["target"], "tags": d.get("tags") or eng._tok(d["target"])[:8],
+               "kind": d.get("kind", "gold"), "status": "pending"}
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return jsonify(ok=True, target=row["target"])
+    rows = []
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    return jsonify(rows)
+
+
+def _read_targets():
+    path = os.path.join(eng.RUNAI_DIR, "cookbook_targets.jsonl")
+    rows = []
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    return path, rows
+
+def _next_pending_target():
+    _, rows = _read_targets()
+    return next((r for r in rows if r.get("status") == "pending"), None)
+
+def _mark_target(target, res):
+    path, rows = _read_targets()
+    for r in rows:
+        if r.get("target") == target:
+            r["status"] = (f"passed:{res['id']}" if res.get("status") == "passed"
+                           else f"failed:{res.get('reason','?')[:60]}")
+    with open(path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 @app.route("/preview/<session>/")

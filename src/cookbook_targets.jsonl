@@ -1,0 +1,4 @@
+{"target":"a Minecraft-style first-person voxel world you can fly through and place/break blocks, mouse look + WASD","tags":["voxel","minecraft","3d","world","fps","blocks","place","break"],"kind":"gold","status":"pending"}
+{"target":"a Doom-style raycasting first-person shooter on a 2D canvas with mouse look, WASD movement, and a hitscan gun","tags":["doom","raycast","fps","gun","shooter","mouselook","wasd"],"kind":"gold","status":"pending"}
+{"target":"a sniper shooting game with right-click scope zoom (FOV lerp), bullet travel and drop, and a scope overlay","tags":["sniper","scope","zoom","bullet","ballistics","fps","fov"],"kind":"gold","status":"pending"}
+{"target":"a wireframe FPV drone flight simulator over a 3D wireframe terrain, mouse look plus WASD throttle and yaw","tags":["drone","fpv","wireframe","3d","flight","simulator","mouselook","wasd"],"kind":"gold","status":"pending"}

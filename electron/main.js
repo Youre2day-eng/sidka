@@ -191,13 +191,19 @@ function ensureRunaiDirs() {
     }
   }
   // Seed the code cookbook (composable recipes the build model learns from) once.
-  const cookbookSrc = DEV
-    ? path.join(__dirname, '..', 'src', 'cookbook.jsonl')
-    : path.join(process.resourcesPath, 'server', 'cookbook.jsonl');
-  const cookbookDest = path.join(RUNAI, 'cookbook.jsonl');
-  if (fs.existsSync(cookbookSrc) && !fs.existsSync(cookbookDest)) {
-    fs.copyFileSync(cookbookSrc, cookbookDest);
-  }
+  const serverRoot = DEV
+    ? path.join(__dirname, '..', 'src')
+    : path.join(process.resourcesPath, 'server');
+  const copyOnce = (rel, dest) => {
+    const src = path.join(serverRoot, rel);
+    if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest);
+  };
+  copyOnce('cookbook.jsonl', path.join(RUNAI, 'cookbook.jsonl'));
+  copyOnce('cookbook_targets.jsonl', path.join(RUNAI, 'cookbook_targets.jsonl'));
+  // Headless self-seeding verifier shim (needs Node at runtime).
+  const growDir = path.join(RUNAI, 'grow');
+  if (!fs.existsSync(growDir)) fs.mkdirSync(growDir, { recursive: true });
+  copyOnce(path.join('grow', '_shim.mjs'), path.join(growDir, '_shim.mjs'));
 }
 
 // ── IPC handlers ───────────────────────────────────────────────────────────
