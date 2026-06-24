@@ -858,6 +858,41 @@ def api_platform():
 # ---- live preview: run generated code as a real served page --------
 PREVIEW_DIR = os.path.join(RUNAI_DIR, "preview")
 
+# Injected into previewed pages so a JS error shows a visible overlay instead of a black void.
+_PREVIEW_HARNESS = """<script>
+(function(){
+  function show(msg){
+    var d=document.getElementById('__sidka_err__');
+    if(!d){d=document.createElement('div');d.id='__sidka_err__';
+      d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';
+      (document.body||document.documentElement).appendChild(d);}
+    d.textContent='\\u26a0 '+msg;
+  }
+  window.addEventListener('error',function(e){
+    var loc=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';
+    show((e.message||'Script error')+loc);
+  },true);
+  window.addEventListener('unhandledrejection',function(e){
+    show('Unhandled promise rejection: '+((e.reason&&e.reason.message)||e.reason));
+  });
+})();
+</script>"""
+
+
+def _inject_harness(html):
+    """Insert the error-overlay harness as the first thing in <head> (or at the top)."""
+    if "__sidka_err__" in html:
+        return html
+    m = re.search(r"<head[^>]*>", html, re.I)
+    if m:
+        i = m.end()
+        return html[:i] + "\n" + _PREVIEW_HARNESS + html[i:]
+    m = re.search(r"<html[^>]*>", html, re.I)
+    if m:
+        i = m.end()
+        return html[:i] + "\n<head>" + _PREVIEW_HARNESS + "</head>" + html[i:]
+    return _PREVIEW_HARNESS + html
+
 
 def _safe_slug(s, default="default"):
     s = re.sub(r"[^a-zA-Z0-9_-]", "_", (s or "").strip())
@@ -896,6 +931,12 @@ def serve_preview(session, subpath="index.html"):
         full = os.path.join(full, "index.html")
     if not os.path.exists(full):
         return "Not found", 404
+    if full.endswith(".html"):
+        try:
+            html = _inject_harness(open(full, encoding="utf-8").read())
+            return Response(html, mimetype="text/html", headers={"Cache-Control": "no-store"})
+        except Exception:
+            pass
     resp = send_from_directory(base, subpath)
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -2382,8 +2423,8 @@ function fmt(t) {
       return `<div class="artifact-wrap">${artifactBar(id, 'svg')}<div class="svg-preview">${safe}</div></div>`;
     }
     if (lang === 'html') {
-      const srcdoc = p.v.replace(/"/g, '&quot;');
       const id = registerArtifact('html', p.v);
+      const srcdoc = injectHarness(p.v).replace(/"/g, '&quot;');
       return `<div class="artifact-wrap">${artifactBar(id, 'html')}` +
              `<div class="html-preview"><iframe srcdoc="${srcdoc}" sandbox="allow-scripts allow-forms allow-modals"></iframe></div></div>`;
     }
@@ -2395,6 +2436,17 @@ function fmt(t) {
 // ---- artifact registry: lets buttons re-open generated code as a live preview ----
 window._artifacts = window._artifacts || {};
 let _artifactSeq = 0;
+
+// surface JS errors as a visible overlay inside the inline iframe (not a black void)
+const _PREVIEW_HARNESS = `<script>(function(){function show(m){var d=document.getElementById('__sidka_err__');if(!d){d=document.createElement('div');d.id='__sidka_err__';d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';(document.body||document.documentElement).appendChild(d);}d.textContent='\\u26a0 '+m;}window.addEventListener('error',function(e){var l=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';show((e.message||'Script error')+l);},true);window.addEventListener('unhandledrejection',function(e){show('Unhandled rejection: '+((e.reason&&e.reason.message)||e.reason));});})();<\/script>`;
+function injectHarness(html) {
+  if (html.indexOf('__sidka_err__') !== -1) return html;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) { const i = m.index + m[0].length; return html.slice(0, i) + _PREVIEW_HARNESS + html.slice(i); }
+  const h = html.match(/<html[^>]*>/i);
+  if (h) { const i = h.index + h[0].length; return html.slice(0, i) + '<head>' + _PREVIEW_HARNESS + '</head>' + html.slice(i); }
+  return _PREVIEW_HARNESS + html;
+}
 function registerArtifact(kind, code) {
   const id = 'art_' + (++_artifactSeq);
   window._artifacts[id] = { kind, code };
