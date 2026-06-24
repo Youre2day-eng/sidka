@@ -29,6 +29,11 @@ from flask import Flask, Response, jsonify, request
 # Signal to _lib.confirm() and tool_run_shell() that approval is handled by the cockpit UI.
 os.environ["RUNAI_WEB_MODE"] = "1"
 
+# Cross-platform shell adapter — sets SHELL_CMD, projects_root(), etc.
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _here)
+from platform_shell import PLATFORM_INFO, projects_root, normalize_path  # noqa: E402
+
 # Reuse the terminal engine (models, router, skills, sessions, RAG).
 sys.path.insert(0, os.path.expanduser("~"))
 import manager as eng  # noqa: E402
@@ -499,14 +504,14 @@ def fast_cmd(name):
 
     if name == "index":
         def do_index():
-            eng.cmd_index(os.path.expanduser("~/Desktop/Cld"))
+            eng.cmd_index(projects_root())
         threading.Thread(target=do_index, daemon=True).start()
         return jsonify(result="Indexing started in background. Will update ~/.runai/index.json when complete.")
 
     if name == "standup":
         # standup still needs LLM synthesis but uses the fast model
         import subprocess as _sp
-        root = os.path.expanduser("~/Desktop/Cld")
+        root = projects_root()
         lines = []
         try:
             for d in sorted(os.listdir(root))[:12]:
@@ -795,9 +800,9 @@ def api_filetree():
     root = request.args.get("path", "").strip()
     if not root:
         session_name = request.args.get("session", "default")
-        root = os.path.expanduser(f"~/Desktop/Cld/{session_name}")
+        root = os.path.join(projects_root(), session_name)
     root = os.path.realpath(os.path.expanduser(root))
-    cld_root = os.path.realpath(os.path.expanduser("~/Desktop/Cld"))
+    cld_root = os.path.realpath(projects_root())
     home_root = os.path.realpath(os.path.expanduser("~"))
     if not (root.startswith(cld_root) or root.startswith(os.path.join(home_root, ".runai"))):
         return jsonify({"error": "Path outside allowed roots"}), 403
@@ -811,7 +816,7 @@ def api_file():
     import os, mimetypes
     path = request.args.get("path", "").strip()
     path = os.path.realpath(os.path.expanduser(path))
-    cld_root = os.path.realpath(os.path.expanduser("~/Desktop/Cld"))
+    cld_root = os.path.realpath(projects_root())
     home_root = os.path.realpath(os.path.expanduser("~"))
     if not (path.startswith(cld_root) or path.startswith(os.path.join(home_root, ".runai"))):
         return jsonify({"error": "Path outside allowed roots"}), 403
@@ -842,6 +847,12 @@ def api_probe():
         except Exception:
             pass
     return jsonify({"port": None})
+
+
+@app.route("/api/platform")
+def api_platform():
+    """Return OS / shell / path info so the UI can surface platform context."""
+    return jsonify(PLATFORM_INFO)
 
 
 # ---- task engine routes -------------------------------------------
