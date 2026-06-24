@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Empty, Queue
 
 import ollama
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 # Signal to _lib.confirm() and tool_run_shell() that approval is handled by the cockpit UI.
 os.environ["RUNAI_WEB_MODE"] = "1"
@@ -855,6 +855,52 @@ def api_platform():
     return jsonify(PLATFORM_INFO)
 
 
+# ---- live preview: run generated code as a real served page --------
+PREVIEW_DIR = os.path.join(RUNAI_DIR, "preview")
+
+
+def _safe_slug(s, default="default"):
+    s = re.sub(r"[^a-zA-Z0-9_-]", "_", (s or "").strip())
+    return s or default
+
+
+@app.route("/api/preview/save", methods=["POST"])
+def api_preview_save():
+    """Save a generated HTML artifact and return a live URL the preview pane can load."""
+    d = request.get_json(force=True) or {}
+    html = d.get("html", "")
+    if not html.strip():
+        return jsonify(error="no html provided"), 400
+    session = _safe_slug(d.get("session"), "scratch")
+    name    = _safe_slug(d.get("name"), "artifact")
+    target  = os.path.join(PREVIEW_DIR, session)
+    os.makedirs(target, exist_ok=True)
+    fname = name if name.endswith(".html") else name + ".html"
+    for path in (os.path.join(target, fname), os.path.join(target, "index.html")):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(html)
+    return jsonify(url=f"/preview/{session}/{fname}", index=f"/preview/{session}/")
+
+
+@app.route("/preview/<session>/")
+@app.route("/preview/<session>/<path:subpath>")
+def serve_preview(session, subpath="index.html"):
+    """Serve saved preview files. Same-origin so the user's own code runs unrestricted."""
+    session = _safe_slug(session, "scratch")
+    base = os.path.realpath(os.path.join(PREVIEW_DIR, session))
+    full = os.path.realpath(os.path.join(base, subpath))
+    if not (full == base or full.startswith(base + os.sep)):
+        return "Forbidden", 403
+    if os.path.isdir(full):
+        subpath = os.path.join(subpath, "index.html")
+        full = os.path.join(full, "index.html")
+    if not os.path.exists(full):
+        return "Not found", 404
+    resp = send_from_directory(base, subpath)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 # ---- task engine routes -------------------------------------------
 
 def _tasks_skill():
@@ -1129,7 +1175,7 @@ body {
 }
 .tasks-toolbar h2 { font-size: 15px; font-weight: 700; margin-right: 4px; }
 .filter-pill {
-  font-size: 11px; padding: 3px 10px; border-radius: 12px; cursor: pointer;
+  font-size: 11px; padding: 3px 12px; border-radius: 9999px; cursor: pointer;
   border: 1px solid var(--border2); background: transparent; color: var(--dim);
   transition: background 0.12s, color 0.12s;
 }
@@ -1177,7 +1223,7 @@ body {
 .kb-card-notes { color: var(--mid); font-size: 12px; margin-bottom: 8px; line-height: 1.5; }
 .kb-card-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .kb-card-actions button {
-  font-size: 10px; padding: 2px 8px; border-radius: 6px;
+  font-size: 10px; padding: 2px 10px; border-radius: 9999px;
   border: 1px solid var(--border2); background: transparent; color: var(--dim);
   cursor: pointer; transition: background 0.1s;
 }
@@ -1225,11 +1271,11 @@ button {
   background: var(--acc);
   color: #1a1200;
   border: none;
-  border-radius: 6px;
+  border-radius: 9999px;
   font: inherit;
   font-size: 12px;
   font-weight: 700;
-  padding: 6px 12px;
+  padding: 6px 14px;
   cursor: pointer;
   transition: filter 0.12s;
   white-space: nowrap;
@@ -1619,8 +1665,27 @@ body,.main,.msgs{background:var(--bg);color:var(--text);font-family:var(--sans);
 }
 .svg-preview,.html-preview{
   background:#0a0a0b;border:1px solid var(--border);
-  border-radius:var(--rad-sm);overflow:hidden;margin-top:var(--s2);
+  border-radius:0 0 var(--rad-sm) var(--rad-sm);overflow:hidden;margin-top:0;
 }
+.artifact-wrap{margin:var(--s2) 0;}
+.artifact-bar{
+  display:flex;align-items:center;gap:var(--s2);
+  background:var(--bg4);border:1px solid var(--border);border-bottom:none;
+  border-radius:var(--rad-sm) var(--rad-sm) 0 0;
+  padding:6px 10px;
+}
+.artifact-tag{
+  font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:1px;
+  text-transform:uppercase;color:var(--dim);
+}
+.artifact-btn{
+  background:var(--bg3);color:var(--mid);
+  border:1px solid var(--border2);border-radius:9999px;
+  font-size:11.5px;font-weight:500;padding:3px 11px;cursor:pointer;
+  transition:all .14s ease;white-space:nowrap;
+}
+.artifact-btn:hover{color:var(--acc);border-color:var(--acc-line);background:var(--acc-soft);}
+.html-preview iframe{min-height:380px;}
 
 /* ---- Composer ---- */
 .composer{
@@ -2015,15 +2080,65 @@ function fmt(t) {
     const lang = p.lang;
     if (lang === 'svg') {
       const safe = p.v.replace(/<script[\s\S]*?<\/script>/gi, '');
-      return `<div class="svg-preview">${safe}</div>`;
+      const id = registerArtifact('svg', p.v);
+      return `<div class="artifact-wrap">${artifactBar(id, 'svg')}<div class="svg-preview">${safe}</div></div>`;
     }
     if (lang === 'html') {
       const srcdoc = p.v.replace(/"/g, '&quot;');
-      return `<div class="html-preview"><iframe srcdoc="${srcdoc}" sandbox="allow-scripts"></iframe></div>`;
+      const id = registerArtifact('html', p.v);
+      return `<div class="artifact-wrap">${artifactBar(id, 'html')}` +
+             `<div class="html-preview"><iframe srcdoc="${srcdoc}" sandbox="allow-scripts allow-forms allow-modals"></iframe></div></div>`;
     }
     const header = lang ? `<div class="code-header">${esc(lang)}</div>` : '';
     return `${header}<pre>${esc(p.v)}</pre>`;
   }).join('');
+}
+
+// ---- artifact registry: lets buttons re-open generated code as a live preview ----
+window._artifacts = window._artifacts || {};
+let _artifactSeq = 0;
+function registerArtifact(kind, code) {
+  const id = 'art_' + (++_artifactSeq);
+  window._artifacts[id] = { kind, code };
+  return id;
+}
+function artifactBar(id, kind) {
+  const label = kind === 'html' ? 'HTML' : 'SVG';
+  return `<div class="artifact-bar">
+    <span class="artifact-tag">${label}</span>
+    <span style="flex:1"></span>
+    <button class="artifact-btn" onclick="openLivePreview('${id}')" title="Run full-size in the preview pane">&#9654; Live preview</button>
+    <button class="artifact-btn" onclick="popoutArtifact('${id}')" title="Open in a new browser window">&#8599; Pop out</button>
+  </div>`;
+}
+
+async function saveArtifact(id) {
+  const a = window._artifacts[id];
+  if (!a) return null;
+  // SVG: wrap in a minimal HTML doc so it serves as a full page
+  const html = a.kind === 'html' ? a.code
+    : `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#0b0b0c}svg{max-width:100%;max-height:100%}</style>${a.code}`;
+  const r = await fetch('/api/preview/save', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ html, session: ($('#session')?.value || 'scratch'), name: id })
+  });
+  return r.ok ? (await r.json()) : null;
+}
+
+async function openLivePreview(id) {
+  const res = await saveArtifact(id);
+  if (!res) return;
+  const col = $('#previewCol');
+  if (!col.classList.contains('visible')) {
+    col.classList.add('visible');
+    $('#previewBtn').style.color = 'var(--acc)';
+  }
+  connectPreview(res.url, 'live');
+}
+
+async function popoutArtifact(id) {
+  const res = await saveArtifact(id);
+  if (res) window.open(res.url, '_blank');
 }
 
 function addMsg(who, cls) {
@@ -2936,14 +3051,19 @@ async function probeDevServer() {
   $('#previewProbeBtn').textContent = 'probe';
 }
 
-function connectPreview(url) {
+function connectPreview(url, label) {
   _previewUrl = url;
   const frame = $('#previewFrame');
   const badge = $('#previewBadge');
-  const portMatch = url.match(/:(\d+)/);
-  badge.textContent = portMatch ? ':' + portMatch[1] : url;
+  if (label) {
+    badge.textContent = label;
+  } else {
+    const portMatch = url.match(/:(\d+)/);
+    badge.textContent = portMatch ? ':' + portMatch[1] : url;
+  }
   badge.style.display = '';
-  frame.src = url;
+  // cache-bust so reload always shows the latest saved artifact
+  frame.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
   frame.style.display = 'block';
   $('#previewEmpty').style.display = 'none';
 }
@@ -2959,7 +3079,7 @@ $('#previewProbeBtn').onclick = probeDevServer;
 
 $('#previewRefreshBtn').onclick = () => {
   const frame = $('#previewFrame');
-  if (_previewUrl) frame.src = _previewUrl;
+  if (_previewUrl) frame.src = _previewUrl + (_previewUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
 };
 
 $('#previewNewTabBtn').onclick = () => {

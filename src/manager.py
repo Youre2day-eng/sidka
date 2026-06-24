@@ -103,11 +103,18 @@ SYSTEM_PROMPTS = {
 # ones) know about rendering and self-review capabilities.
 _AGENT_CAPABILITIES = """
 
-=== RENDERING CAPABILITIES ===
+=== RENDERING + LIVE PREVIEW CAPABILITIES ===
 The chat UI renders these code block types inline — use them proactively:
 - ```svg  → live SVG graphic rendered directly in the chat bubble
-- ```html → sandboxed interactive iframe (JS allowed)
+- ```html → live interactive preview, PLUS a "▶ Live preview" button that opens the
+            artifact full-size in the side preview pane and a "↗ Pop out" button that
+            opens it in a real browser window. So whatever you build actually RUNS.
 - ```js, ```python, etc. → syntax-highlighted code block
+
+When building anything visual or interactive (a game, app, tool, UI, animation, demo),
+ALWAYS output ONE complete, self-contained ```html document — full <!doctype html> with
+all CSS and JS inline, no external dependencies. That single block gives the user a live,
+running preview they can open full-screen. Never split it across blocks or leave TODOs.
 
 === WHEN TO GENERATE VISUALS ===
 - Data, metrics, comparisons → call the chart skill, paste SVG in a ```svg block
