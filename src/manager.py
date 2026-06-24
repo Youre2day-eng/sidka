@@ -77,11 +77,21 @@ def _agent_model():
         pass
     return _AGENT_MODEL_FALLBACK
 
+# "build" routes any make/create/generate request to the capable coder model so it
+# can actually produce working code + live HTML/SVG previews (not the 1.5b stub).
+MODELS["build"] = _agent_model()
+
 SYSTEM_PROMPTS = {
     "fast":      "You are a concise local AI assistant for DJ, a solo developer and creative. Answer directly and keep it short. Never invent names or personal details about the user.",
     "technical": "You are an expert software engineer assisting DJ, a solo developer. Be precise and correct. Show minimal code only when it actually helps. Never invent names or personal details.",
     "creative":  "You are an imaginative writer assisting DJ. Be original and evocative. Keep responses focused on what was asked.",
     "logic":     "You are a clear-headed reasoner assisting DJ. Give a direct, concise answer. Reason through the problem only if it genuinely requires it — never pad the response. Never invent names or personal details.",
+    "build":     ("You are an expert build agent for DJ, a solo developer. When asked to make, build, or create "
+                  "something visual or interactive — a game, app, UI, component, page, animation, chart, or demo — "
+                  "you BUILD IT, you never refuse or defer. Output a complete, self-contained, working artifact. "
+                  "For anything visual or interactive, emit a single ```html block (full HTML+CSS+JS, no external "
+                  "deps) — it renders live in the chat. For a static graphic, emit a ```svg block. Write the whole "
+                  "thing; do not output partial snippets or 'you could do X' suggestions. Never invent personal details."),
     "agent":     ("You are an expert coding agent for DJ, a solo developer managing multiple projects. "
                   "You have access to tools for reading/writing files, running shell commands, calling webhooks, "
                   "GitHub, and Cloudflare. When given a task: think through the steps, use tools to do the work, "
@@ -224,13 +234,29 @@ _HARD_KEYWORDS = re.compile(
     r"rust|sql|regex|api|stack.?trace|compile|algorithm|math|calculat|equation|"
     r"derivative|integral|prove|proof|deduce|logic|puzzle|riddle|step.?by.?step|"
     r"brain.?teaser|reasoning|poem|story|stories|song|lyric|haiku|sonnet|imagine|"
-    r"fiction|novel|character|screenplay|write me a)\b"
+    r"fiction|novel|character|screenplay|write me a|"
+    # build vocabulary — so short requests like "make a snake game" reach the router
+    r"make|build|create|generate|scaffold|prototype|develop|implement|render|clone|"
+    r"game|app|website|web ?site|landing|html|css|canvas|svg|ui|component|dashboard|"
+    r"widget|mockup|snake|tetris|pong|calculator|preview|interactive|animation)\b"
+)
+
+# Build requests: must have both a build-verb and a build-noun anywhere in the text.
+# Lookaheads make it order-independent and avoid stealing "write me a poem" (creative).
+_BUILD_ROUTE = re.compile(
+    r"(?=.*\b(make|build|create|generate|scaffold|prototype|develop|implement|render|clone|design|code)\b)"
+    r"(?=.*\b(game|app|application|web ?site|site|page|landing|html|css|canvas|svg|ui|component|"
+    r"dashboard|widget|form|preview|demo|tool|clock|calculator|timer|snake|tetris|pong|chart|"
+    r"animation|mockup|interactive|button|menu|navbar|modal|card|layout|visualizer|simulation)\b)"
 )
 
 def route(user_prompt):
     if RT["override"]:
         return RT["override"]
     low = user_prompt.lower()
+    # Build requests win outright — route to the capable coder model regardless of length.
+    if _BUILD_ROUTE.search(low):
+        return "build"
     # Short casual messages: skip LLM router entirely to avoid misclassification.
     # "are u faster", "hello", "what's up", etc. should never hit phi3/gemma.
     if len(user_prompt.strip()) < 40 and not _HARD_KEYWORDS.search(low):
@@ -258,7 +284,9 @@ def route(user_prompt):
 def build_messages(session, category, extras=None):
     # Per-session system prompt (project isolation) overrides the category default.
     prompt = session.get("system_prompt") or SYSTEM_PROMPTS.get(category) or SYSTEM_PROMPTS["fast"]
-    if category == "agent":
+    # Inject live-render + self-review capabilities for every build/code-capable model,
+    # not just cockpit "agent" mode, so normal chat can produce live HTML/SVG previews.
+    if category in ("agent", "build", "technical"):
         prompt = prompt + _AGENT_CAPABILITIES
     msgs = [{"role": "system", "content": prompt}]
     if session["summary"]:

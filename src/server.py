@@ -928,7 +928,7 @@ PAGE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RunAI Cockpit</title>
+<title>Sidka</title>
 <style>
 :root {
   --bg:     #0d0d0d;
@@ -1532,13 +1532,180 @@ h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; }
 .flex { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .sep  { height: 1px; background: var(--border); margin: 10px 0; }
 input[type=text].full { width: 100%; }
+
+/* ===== Sidka UI v2 — Editorial Dark (design panel winner + brass-stripe graft) ===== */
+:root{
+  --bg:#0b0b0c;--bg2:#101012;--bg3:#161618;--bg4:#1d1d20;
+  --border:#242427;--border2:#303035;--hair:rgba(255,255,255,.06);
+  --text:#ededee;--mid:#a6a6ab;--dim:#6a6a70;
+  --acc:#cdac55;--acc-soft:rgba(205,172,85,.14);--acc-line:rgba(205,172,85,.55);
+  --ok:#5cd693;--err:#f3837e;--warn:#f0a24e;
+  --s1:6px;--s2:10px;--s3:14px;--s4:20px;--s5:28px;
+  --rad:12px;--rad-sm:9px;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 18px -8px rgba(0,0,0,.55);
+}
+body,.main,.msgs{background:var(--bg);color:var(--text);font-family:var(--sans);letter-spacing:.1px;}
+
+/* ---- Sidebar ---- */
+.sidebar{
+  background:linear-gradient(180deg,var(--bg2),var(--bg));
+  border-right:1px solid var(--border);
+  padding:var(--s4) var(--s3);width:212px;
+}
+.sidebar>:first-child{
+  font-weight:600;font-size:16px;letter-spacing:.4px;
+  padding:0 var(--s2) var(--s4);color:var(--text);
+}
+.nav{
+  display:flex;align-items:center;gap:var(--s2);
+  padding:9px var(--s2);margin:2px 0;border-radius:var(--rad-sm);
+  color:var(--mid);font-size:13.5px;font-weight:500;
+  border:1px solid transparent;cursor:pointer;
+  transition:background .14s ease,color .14s ease;
+}
+.nav:hover{background:var(--bg3);color:var(--text);}
+.nav.on{
+  background:var(--bg4);color:var(--text);
+  border:1px solid var(--border2);
+  box-shadow:inset 2px 0 0 var(--acc),var(--shadow);
+}
+.side-foot{
+  margin-top:auto;padding:var(--s3) var(--s2) 0;
+  border-top:1px solid var(--hair);
+  font-family:var(--mono);font-size:11px;letter-spacing:.4px;
+  color:var(--dim);text-transform:uppercase;
+}
+
+/* ---- Chat header ---- */
+.chat-header{
+  background:linear-gradient(180deg,var(--bg2),var(--bg));
+  border-bottom:1px solid var(--border);
+  padding:var(--s4) var(--s5);gap:var(--s3);
+}
+.chat-header>:first-child{
+  font-size:20px;font-weight:600;letter-spacing:-.2px;color:var(--text);
+}
+.chat-header select{
+  background:var(--bg3);color:var(--mid);
+  border:1px solid var(--border2);border-radius:var(--rad-sm);
+  padding:6px 10px;font-size:12.5px;font-family:var(--mono);letter-spacing:.3px;
+}
+.chat-header select:hover{border-color:var(--acc-line);color:var(--text);}
+
+/* ---- Messages ---- */
+.msgs{padding:var(--s5) var(--s5) var(--s4);}
+.msg{margin:0 0 var(--s5);max-width:760px;}
+.who{
+  font-family:var(--mono);font-size:10.5px;font-weight:500;
+  text-transform:uppercase;letter-spacing:1.4px;
+  color:var(--dim);margin:0 0 var(--s2);padding-left:2px;
+}
+.bubble{
+  background:var(--bg3);
+  border:1px solid var(--border2);
+  border-radius:var(--rad);
+  padding:var(--s3) var(--s4);
+  line-height:1.62;font-size:14.5px;color:var(--text);
+  box-shadow:var(--shadow);
+}
+.bubble p{margin:0 0 .7em;}.bubble p:last-child{margin-bottom:0;}
+.bubble a{color:var(--acc);text-decoration:none;border-bottom:1px solid var(--acc-line);}
+.bubble code{
+  font-family:var(--mono);font-size:12.5px;
+  background:var(--bg);border:1px solid var(--hair);
+  border-radius:5px;padding:1px 5px;color:var(--text);
+}
+.svg-preview,.html-preview{
+  background:#0a0a0b;border:1px solid var(--border);
+  border-radius:var(--rad-sm);overflow:hidden;margin-top:var(--s2);
+}
+
+/* ---- Composer ---- */
+.composer{
+  background:linear-gradient(180deg,var(--bg),var(--bg2));
+  border-top:1px solid var(--border);
+  padding:var(--s3) var(--s5) var(--s4);gap:var(--s2);
+}
+.composer textarea{
+  background:var(--bg3);color:var(--text);
+  border:1px solid var(--border2);border-radius:var(--rad);
+  padding:var(--s3) var(--s3);font-size:14.5px;line-height:1.55;font-family:var(--sans);
+  transition:border-color .14s ease,box-shadow .14s ease;
+}
+.composer textarea::placeholder{color:var(--dim);}
+.composer textarea:focus{
+  outline:none;border-color:var(--acc-line);
+  box-shadow:0 0 0 3px var(--acc-soft);
+}
+
+/* ---- Pills / chips / buttons ---- */
+.filter-pill{
+  background:var(--bg3);color:var(--mid);
+  border:1px solid var(--border2);
+  padding:5px 13px;font-size:12.5px;font-weight:500;
+  transition:all .14s ease;
+}
+.filter-pill:hover{color:var(--text);border-color:var(--acc-line);}
+.filter-pill.on{background:var(--acc-soft);color:var(--acc);border-color:var(--acc-line);}
+
+/* ---- Tasks / Kanban ---- */
+.kb-col{
+  background:var(--bg2);border:1px solid var(--border);
+  border-radius:var(--rad);padding:var(--s3);
+}
+.kb-col-head{
+  font-family:var(--mono);font-size:11px;font-weight:500;
+  text-transform:uppercase;letter-spacing:1px;color:var(--mid);
+  padding:0 var(--s1) var(--s3);
+  border-bottom:1px solid var(--hair);margin-bottom:var(--s3);
+}
+.kb-card{
+  background:var(--bg4);border:1px solid var(--border2);
+  border-radius:var(--rad-sm);padding:var(--s3);margin-bottom:var(--s2);
+  box-shadow:var(--shadow);transition:transform .12s ease,border-color .14s ease;
+}
+.kb-card:hover{transform:translateY(-1px);border-color:var(--acc-line);}
+.kb-card-title{font-size:13.5px;font-weight:600;color:var(--text);line-height:1.4;margin-bottom:6px;}
+.kb-card-meta{
+  font-family:var(--mono);font-size:11px;letter-spacing:.3px;color:var(--dim);
+}
+.kb-card-actions{display:flex;gap:6px;margin-top:var(--s2);}
+.kb-card-actions button{
+  background:var(--bg3);color:var(--mid);border:1px solid var(--border2);
+  font-size:11.5px;padding:4px 10px;transition:all .14s ease;
+}
+.kb-card-actions button:hover{color:var(--text);border-color:var(--acc-line);}
+
+/* ---- Tabs ---- */
+.tab{
+  color:var(--dim);font-size:13px;font-weight:500;
+  padding:8px 2px;border-bottom:2px solid transparent;transition:color .14s ease;
+}
+.tab:hover{color:var(--mid);}
+.tab.on{color:var(--text);border-bottom-color:var(--acc);}
+/* Graft from [1] Warp Terminal Pro: the active-nav brass stripe is crisper
+   than the winner's inset box-shadow rule. Layer on top of Editorial Dark.
+   Equal/append specificity wins by source order. */
+.nav{position:relative;}
+.nav.on{
+  background:linear-gradient(90deg,var(--acc-soft),transparent 70%);
+  box-shadow:var(--shadow);
+}
+.nav.on::before{
+  content:"";position:absolute;left:5px;top:50%;
+  transform:translateY(-50%);
+  width:3px;height:16px;border-radius:3px;
+  background:var(--acc);
+}
 </style>
 </head>
 <body>
 
 <!-- sidebar -->
 <div class="side">
-  <div class="brand">Run<span class="ai">AI</span></div>
+  <div class="brand">Sid<span class="ai">ka</span></div>
   <div class="nav on" data-tab="chat">Chat</div>
   <div class="nav" data-tab="autos">Automations</div>
   <div class="nav" data-tab="runs">Runs</div>
@@ -3044,5 +3211,5 @@ if __name__ == "__main__":
     errs = f", {len(SKILL_ERRORS)} errors" if SKILL_ERRORS else ""
     for name, err in SKILL_ERRORS.items():
         print(f"  [skill error] {name}: {err}")
-    print(f"RunAI Cockpit v5 running at http://localhost:{PORT}  ({len(SKILLS)} skills{errs})")
+    print(f"Sidka running at http://localhost:{PORT}  ({len(SKILLS)} skills{errs})")
     app.run(host="127.0.0.1", port=PORT, threaded=True, debug=False)
