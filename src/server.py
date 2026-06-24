@@ -901,6 +901,274 @@ def serve_preview(session, subpath="index.html"):
     return resp
 
 
+# ---- project preview: detect + run real Cld projects ---------------
+import glob as _glob
+import subprocess as _subp
+import signal as _signal
+import atexit as _atexit
+
+_PROJECTS_ROOT = projects_root()
+_DEV_PROCS = {}            # name -> {"proc":Popen, "url":str, "type":str}
+_DEV_LOCK = threading.Lock()
+
+
+def _node_path_dirs():
+    dirs = []
+    nvm = sorted(_glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin")))
+    if nvm:
+        dirs.append(nvm[-1])           # newest nvm node
+    dirs += ["/usr/local/bin", "/opt/homebrew/bin"]
+    return os.pathsep.join(d for d in dirs if os.path.isdir(d))
+
+
+def _read_pkg(path):
+    f = os.path.join(path, "package.json")
+    if os.path.exists(f):
+        try:
+            return json.load(open(f))
+        except Exception:
+            return {}
+    return {}
+
+
+def _detect_project(name):
+    path = os.path.join(_PROJECTS_ROOT, name)
+    base = {"name": name, "type": "unknown", "previewable": False, "mode": "none", "reason": ""}
+    if not os.path.isdir(path):
+        return {**base, "type": "missing", "reason": "not found"}
+    pkg     = _read_pkg(path)
+    deps    = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    scripts = pkg.get("scripts", {})
+
+    def has(f):
+        return os.path.exists(os.path.join(path, f))
+
+    is_electron = "electron" in deps or "electron" in str(pkg.get("main", ""))
+    is_cep      = has("CSXS") or bool(_glob.glob(os.path.join(path, "**/CSXS/manifest.xml"), recursive=True))
+    is_vite     = "vite" in deps
+    is_next     = "next" in deps
+    is_cra      = "react-scripts" in deps
+    has_modules = has("node_modules")
+
+    if is_cep:
+        return {**base, "type": "cep",
+                "reason": "Adobe CEP extension — runs inside Premiere Pro, not a browser"}
+
+    dev_script = next((s for s in ("dev", "start", "preview") if s in scripts), None)
+    if dev_script and (is_vite or is_next or is_cra or is_electron):
+        if not has_modules:
+            return {**base, "type": "node",
+                    "reason": f"node_modules missing — run `npm install` in {name} first"}
+        typ  = ("electron-web" if is_electron else
+                "vite" if is_vite else "next" if is_next else "cra" if is_cra else "node")
+        note = ("renderer preview only — Electron/native (IPC, fs) calls will error in the console"
+                if is_electron else "")
+        return {**base, "type": typ, "previewable": True, "mode": "dev-server",
+                "dev_script": dev_script, "reason": note}
+
+    static_idx = next((loc for loc in
+                       ("index.html", "public/index.html", "dist/index.html", "build/index.html")
+                       if has(loc)), None)
+    if static_idx:
+        return {**base, "type": "static", "previewable": True, "mode": "static",
+                "static_index": static_idx, "reason": ""}
+
+    if has("requirements.txt") or _glob.glob(os.path.join(path, "*.py")):
+        return {**base, "type": "python", "reason": "Python project — no browser UI to preview"}
+
+    return {**base, "reason": "no index.html or dev script detected"}
+
+
+def _stop_dev(name=None):
+    """Stop one dev server (by name) or all — escalate SIGTERM → SIGKILL on the process group."""
+    with _DEV_LOCK:
+        names = [name] if name else list(_DEV_PROCS.keys())
+        entries = [(n, _DEV_PROCS.pop(n, None)) for n in names]
+    for n, entry in entries:
+        if not entry:
+            continue
+        proc = entry["proc"]
+        try:
+            pgid = os.getpgid(proc.pid)
+        except Exception:
+            pgid = None
+        for sig in (_signal.SIGTERM, _signal.SIGKILL):
+            if pgid is None or proc.poll() is not None:
+                break
+            try:
+                os.killpg(pgid, sig)
+            except ProcessLookupError:
+                break
+            except Exception:
+                pass
+            for _ in range(15):           # wait up to 1.5s before escalating
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.1)
+        try:
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+
+
+def _start_dev(name, info):
+    """Spawn the project's dev server under a PTY (so it flushes its URL line) and parse it."""
+    import pty, select, struct, fcntl, termios
+    path = os.path.join(_PROJECTS_ROOT, name)
+    env  = os.environ.copy()
+    env["PATH"]    = _node_path_dirs() + os.pathsep + env.get("PATH", "")
+    env["BROWSER"] = "none"   # CRA: don't auto-open a browser
+    env.pop("CI", None)        # never imply CI mode — it suppresses vite's dev URL
+
+    master, slave = pty.openpty()
+    # Give the PTY a real window size, else TUI tools wrap/truncate the URL line.
+    try:
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+    except Exception:
+        pass
+    try:
+        proc = _subp.Popen(
+            ["npm", "run", info["dev_script"]],
+            cwd=path, env=env,
+            stdout=slave, stderr=slave, stdin=slave,
+            start_new_session=True, close_fds=True,
+        )
+    except Exception as e:
+        os.close(master); os.close(slave)
+        return {"ok": False, "reason": f"could not launch npm: {e}"}
+    os.close(slave)
+
+    url, buf = None, b""
+    deadline = time.time() + 50
+    while time.time() < deadline:
+        r, _, _ = select.select([master], [], [], 1.0)
+        if r:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            # Vite color-codes the port digits separately, so strip ANSI before matching.
+            clean = re.sub(rb"\x1b\[[0-9;]*m", b"", buf)
+            m = re.search(rb"https?://(?:localhost|127\.0\.0\.1):(\d+)", clean)
+            if m:
+                url = "http://localhost:%s/" % m.group(1).decode()
+                break
+        elif proc.poll() is not None:
+            break
+
+    if not url:
+        try:
+            os.killpg(os.getpgid(proc.pid), _signal.SIGTERM)
+        except Exception:
+            pass
+        os.close(master)
+        tail = re.sub(r"\x1b\[[0-9;]*m", "", buf.decode("utf-8", "replace"))[-700:]
+        return {"ok": False, "reason": "dev server didn't report a URL in 50s.\n" + tail}
+
+    # Drain the PTY in the background so the child never blocks on a full buffer.
+    def drain():
+        try:
+            while True:
+                if not os.read(master, 4096):
+                    break
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(master)
+            except Exception:
+                pass
+    threading.Thread(target=drain, daemon=True).start()
+
+    with _DEV_LOCK:
+        _DEV_PROCS[name] = {"proc": proc, "url": url, "type": info["type"], "master": master}
+    return {"ok": True, "url": url}
+
+
+@app.route("/api/projects")
+def api_projects():
+    """List Cld projects with detected stack + previewability."""
+    names = sorted(d for d in os.listdir(_PROJECTS_ROOT)
+                   if os.path.isdir(os.path.join(_PROJECTS_ROOT, d)) and not d.startswith("."))
+    out = []
+    for n in names:
+        info = _detect_project(n)
+        info["running"] = n in _DEV_PROCS
+        out.append(info)
+    return jsonify(out)
+
+
+@app.route("/api/preview/project", methods=["POST"])
+def api_preview_project():
+    d    = request.get_json(force=True) or {}
+    name = _safe_slug(d.get("name"), "")
+    if not name:
+        return jsonify(ok=False, reason="no project name"), 400
+    info = _detect_project(name)
+    if not info["previewable"]:
+        return jsonify(ok=False, reason=info["reason"] or "not previewable", info=info)
+
+    if info["mode"] == "static":
+        idx = info["static_index"]
+        return jsonify(ok=True, mode="static", type=info["type"],
+                       url=f"/project-static/{name}/{idx}", note=info["reason"])
+
+    # dev-server: only one at a time — stop the others first
+    if name in _DEV_PROCS:
+        return jsonify(ok=True, mode="dev-server", type=info["type"],
+                       url=_DEV_PROCS[name]["url"], note=info["reason"], reused=True)
+    _stop_dev()  # stop any other running preview
+    res = _start_dev(name, info)
+    if not res["ok"]:
+        return jsonify(ok=False, reason=res["reason"], info=info)
+    return jsonify(ok=True, mode="dev-server", type=info["type"], url=res["url"], note=info["reason"])
+
+
+@app.route("/api/preview/project/stop", methods=["POST"])
+def api_preview_project_stop():
+    d = request.get_json(silent=True) or {}
+    _stop_dev(_safe_slug(d.get("name")) if d.get("name") else None)
+    return jsonify(ok=True, running=list(_DEV_PROCS.keys()))
+
+
+@app.route("/project-static/<name>/")
+@app.route("/project-static/<name>/<path:subpath>")
+def serve_project_static(name, subpath="index.html"):
+    name = _safe_slug(name, "")
+    base = os.path.realpath(os.path.join(_PROJECTS_ROOT, name))
+    full = os.path.realpath(os.path.join(base, subpath))
+    if not (full == base or full.startswith(base + os.sep)):
+        return "Forbidden", 403
+    if os.path.isdir(full):
+        subpath = os.path.join(subpath, "index.html")
+        full = os.path.join(full, "index.html")
+    if not os.path.exists(full):
+        return "Not found", 404
+    # Inject a <base> tag into the entry HTML so relative asset paths resolve.
+    if full.endswith(".html"):
+        try:
+            html = open(full, encoding="utf-8").read()
+            href = "/project-static/" + name + "/" + os.path.dirname(subpath)
+            if not href.endswith("/"):
+                href += "/"
+            if "<base " not in html.lower():
+                html = re.sub(r"(<head[^>]*>)", r"\1\n<base href='" + href + "'>",
+                              html, count=1, flags=re.I)
+            return Response(html, mimetype="text/html",
+                            headers={"Cache-Control": "no-store"})
+        except Exception:
+            pass
+    resp = send_from_directory(base, subpath)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+_atexit.register(lambda: _stop_dev())
+
+
 # ---- task engine routes -------------------------------------------
 
 def _tasks_skill():
@@ -1687,6 +1955,32 @@ body,.main,.msgs{background:var(--bg);color:var(--text);font-family:var(--sans);
 .artifact-btn:hover{color:var(--acc);border-color:var(--acc-line);background:var(--acc-soft);}
 .html-preview iframe{min-height:380px;}
 
+/* ---- project preview picker ---- */
+#projectPicker{position:absolute;inset:0;overflow-y:auto;background:var(--bg);padding:var(--s3);}
+.pp-head{display:flex;align-items:center;justify-content:space-between;
+  font-family:var(--mono);font-size:11px;letter-spacing:.5px;text-transform:uppercase;
+  color:var(--mid);padding:0 2px var(--s2);}
+.pp-sub{font-family:var(--mono);font-size:10.5px;letter-spacing:.5px;text-transform:uppercase;
+  color:var(--dim);padding:var(--s4) 2px var(--s2);border-top:1px solid var(--hair);margin-top:var(--s3);}
+.pp-list{display:flex;flex-direction:column;gap:4px;}
+.pp-row{display:flex;align-items:center;gap:var(--s2);padding:8px 10px;
+  background:var(--bg2);border:1px solid var(--border);border-radius:var(--rad-sm);
+  cursor:pointer;transition:border-color .12s ease,background .12s ease;}
+.pp-row:hover{border-color:var(--acc-line);background:var(--bg3);}
+.pp-row-off{opacity:.5;cursor:default;}
+.pp-row-off:hover{border-color:var(--border);background:var(--bg2);}
+.pp-name{font-size:13px;font-weight:600;color:var(--text);min-width:130px;}
+.pp-tag{font-family:var(--mono);font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.5px;padding:1px 7px;border:1px solid;border-radius:9999px;}
+.pp-reason{font-size:11px;color:var(--dim);margin-left:auto;text-align:right;max-width:55%;}
+.pp-loading{color:var(--dim);font-size:13px;padding:var(--s4);text-align:center;}
+#previewStatus{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:var(--s2);background:var(--bg);color:var(--text);font-size:14px;text-align:center;padding:var(--s4);}
+.pp-spin,.pp-loading::before{}
+.pp-spin{width:22px;height:22px;border:2px solid var(--border2);border-top-color:var(--acc);
+  border-radius:50%;animation:ppspin .7s linear infinite;}
+@keyframes ppspin{to{transform:rotate(360deg)}}
+
 /* ---- Composer ---- */
 .composer{
   background:linear-gradient(180deg,var(--bg),var(--bg2));
@@ -1844,19 +2138,23 @@ body,.main,.msgs{background:var(--bg);color:var(--text);font-family:var(--sans);
         <span class="label">PREVIEW</span>
         <span class="port-badge" id="previewBadge" style="display:none"></span>
         <div style="flex:1"></div>
+        <button class="ghost" id="previewProjectsBtn" title="Preview a Cld project" style="font-size:11px;padding:2px 8px">&#9638; projects</button>
         <button class="ghost" id="previewProbeBtn" title="Find running dev server" style="font-size:11px;padding:2px 8px">probe</button>
         <button class="ghost" id="previewRefreshBtn" title="Reload preview" style="font-size:11px;padding:2px 8px">reload</button>
+        <button class="ghost" id="previewStopBtn" title="Stop dev server" style="font-size:11px;padding:2px 8px;display:none">stop</button>
         <button class="ghost" id="previewNewTabBtn" title="Open in new tab" style="font-size:11px;padding:2px 8px">&#8599;</button>
       </div>
       <div class="preview-body" id="previewBody">
         <div class="preview-empty" id="previewEmpty">
-          <div style="font-size:13px;color:var(--dim)">No dev server detected</div>
+          <div style="font-size:13px;color:var(--dim)">Pick a project or connect a port</div>
+          <button class="ghost" onclick="openProjectPicker()" style="font-size:12px">&#9638; Browse Cld projects</button>
           <div class="preview-port-input">
             <input type="number" id="previewPortInput" placeholder="port" min="1" max="65535">
             <button class="ghost" id="previewConnectBtn">Connect</button>
           </div>
-          <div style="font-size:11px;color:var(--dim);margin-top:4px">Checks: 3000 · 4000 · 5173 · 8000 · 8080</div>
         </div>
+        <div id="projectPicker" style="display:none"></div>
+        <div id="previewStatus" style="display:none"></div>
         <iframe id="previewFrame" style="display:none"></iframe>
       </div>
     </div>
@@ -3089,6 +3387,115 @@ $('#previewNewTabBtn').onclick = () => {
 $('#previewConnectBtn').onclick = () => {
   const port = $('#previewPortInput').value.trim();
   if (port) connectPreview(`http://localhost:${port}/`);
+};
+
+// ---- project preview picker ----
+const PROJ_TYPE_STYLE = {
+  vite:        ['#5cd693', 'web app'],
+  next:        ['#5cd693', 'web app'],
+  cra:         ['#5cd693', 'web app'],
+  static:      ['#5cd693', 'static'],
+  'electron-web': ['#f0a24e', 'renderer only'],
+  cep:         ['#f3837e', 'Premiere'],
+  python:      ['#6a6a70', 'no UI'],
+  node:        ['#f0a24e', 'needs install'],
+  unknown:     ['#6a6a70', '—'],
+  missing:     ['#6a6a70', '—'],
+};
+
+function showPreviewPane() {
+  const col = $('#previewCol');
+  if (!col.classList.contains('visible')) {
+    col.classList.add('visible');
+    $('#previewBtn').style.color = 'var(--acc)';
+  }
+}
+
+async function openProjectPicker() {
+  showPreviewPane();
+  const picker = $('#projectPicker');
+  $('#previewEmpty').style.display = 'none';
+  $('#previewFrame').style.display = 'none';
+  $('#previewStatus').style.display = 'none';
+  picker.style.display = 'block';
+  picker.innerHTML = '<div class="pp-loading">scanning Cld projects…</div>';
+  try {
+    const r = await fetch('/api/projects');
+    const projects = await r.json();
+    const can  = projects.filter(p => p.previewable);
+    const cant = projects.filter(p => !p.previewable);
+    const row = p => {
+      const [color, tag] = PROJ_TYPE_STYLE[p.type] || ['#6a6a70', p.type];
+      const dis = p.previewable ? '' : 'pp-row-off';
+      const click = p.previewable ? `onclick="previewProject('${p.name}')"` : '';
+      const reason = p.reason ? `<span class="pp-reason">${esc(p.reason)}</span>` : '';
+      return `<div class="pp-row ${dis}" ${click}>
+        <span class="pp-name">${esc(p.name)}</span>
+        <span class="pp-tag" style="color:${color};border-color:${color}55">${esc(tag)}</span>
+        ${reason}
+      </div>`;
+    };
+    picker.innerHTML =
+      `<div class="pp-head">
+        <span>${can.length} previewable</span>
+        <button class="ghost" onclick="closeProjectPicker()" style="font-size:11px;padding:2px 8px">close</button>
+      </div>
+      <div class="pp-list">${can.map(row).join('')}</div>
+      <div class="pp-sub">Can't preview in a browser (${cant.length})</div>
+      <div class="pp-list">${cant.map(row).join('')}</div>`;
+  } catch (e) {
+    picker.innerHTML = '<div class="pp-loading">failed to scan projects</div>';
+  }
+}
+
+function closeProjectPicker() {
+  $('#projectPicker').style.display = 'none';
+  if (_previewUrl) $('#previewFrame').style.display = 'block';
+  else $('#previewEmpty').style.display = 'flex';
+}
+
+async function previewProject(name) {
+  $('#projectPicker').style.display = 'none';
+  const status = $('#previewStatus');
+  status.style.display = 'flex';
+  status.innerHTML = `<div class="pp-spin"></div>
+    <div>Starting <b>${esc(name)}</b>…</div>
+    <div style="font-size:11px;color:var(--dim)">dev servers can take 10–40s to boot</div>`;
+  try {
+    const r = await fetch('/api/preview/project', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name })
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      status.innerHTML = `<div style="color:var(--err);font-weight:600">Can't preview ${esc(name)}</div>
+        <pre style="white-space:pre-wrap;font-size:11px;color:var(--dim);max-width:90%;text-align:left">${esc(d.reason || 'unknown')}</pre>
+        <button class="ghost" onclick="openProjectPicker()" style="font-size:11px">← back to projects</button>`;
+      return;
+    }
+    status.style.display = 'none';
+    const label = d.mode === 'static' ? name + ' (static)' : name + (d.type === 'electron-web' ? ' (renderer)' : '');
+    connectPreview(d.url, label);
+    $('#previewStopBtn').style.display = (d.mode === 'dev-server') ? '' : 'none';
+    if (d.note) {
+      // brief non-blocking note about renderer-only previews
+      const badge = $('#previewBadge');
+      badge.title = d.note;
+    }
+  } catch (e) {
+    status.innerHTML = `<div style="color:var(--err)">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+$('#previewProjectsBtn').onclick = openProjectPicker;
+
+$('#previewStopBtn').onclick = async () => {
+  await fetch('/api/preview/project/stop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+  $('#previewStopBtn').style.display = 'none';
+  $('#previewFrame').style.display = 'none';
+  $('#previewBadge').style.display = 'none';
+  _previewUrl = '';
+  $('#previewEmpty').style.display = 'flex';
 };
 
 $('#previewPortInput').onkeydown = e => {
