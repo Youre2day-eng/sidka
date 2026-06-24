@@ -210,6 +210,9 @@ def cookbook_retrieve(query, k=4):
         return []
     scored = []
     for r in recipes:
+        # scaffolds + mechanics are composition-only; they ship via cookbook_compose
+        if r.get("kind") in ("scaffold", "mechanic"):
+            continue
         hay = set(t.lower() for t in r.get("tags", [])) | set(_tok(r.get("title", ""))) | set(_tok(r.get("when", "")))
         overlap = len(qt & hay)
         if not overlap:
@@ -221,8 +224,76 @@ def cookbook_retrieve(query, k=4):
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:k]]
 
+
+# ---- mechanic composition: ambitious 3D targets are built from a scaffold + mechanics
+# Canonical mechanic set per recognized target (scaffold is pulled separately).
+TARGET_KITS = {
+    "doom":   {"scaffold": "scaffold-fps-raycast", "mechanics": ["gun-hitscan", "hud-crosshair"]},
+    "sniper": {"scaffold": "scaffold-fps-raycast", "mechanics": ["scope-zoom", "gun-hitscan", "hud-crosshair"]},
+    "drone":  {"scaffold": "scaffold-wire-flight", "mechanics": ["hud-crosshair"]},
+    "voxel":  {"scaffold": "scaffold-voxel",       "mechanics": []},
+}
+# request token -> kit key
+TARGET_ALIASES = {
+    "doom": "doom", "wolfenstein": "doom", "raycaster": "doom", "raycast": "doom", "fps": "doom",
+    "shooter": "doom", "gun": "doom",
+    "sniper": "sniper", "scope": "sniper", "marksman": "sniper",
+    "minecraft": "voxel", "voxel": "voxel", "blocks": "voxel",
+    "drone": "drone", "fpv": "drone", "quadcopter": "drone", "flight": "drone", "wireframe": "drone",
+}
+
+def _detect_target(qtokens):
+    # sniper/voxel/drone are more specific than the generic doom/fps bucket — prefer them
+    for pref in ("sniper", "voxel", "drone"):
+        if any(TARGET_ALIASES.get(t) == pref for t in qtokens):
+            return pref
+    for t in qtokens:
+        if t in TARGET_ALIASES:
+            return TARGET_ALIASES[t]
+    return None
+
+def cookbook_compose(query):
+    """For a recognized 3D target, return {scaffold, mechanics[]} — a working base
+    plus the bolt-on mechanics to assemble. Returns None for non-3D requests."""
+    recipes = load_cookbook()
+    if not recipes:
+        return None
+    idx = {r["id"]: r for r in recipes}
+    qt = set(_tok(query))
+    target = _detect_target(qt)
+    if not target or target not in TARGET_KITS:
+        return None
+    kit = TARGET_KITS[target]
+    scaffold = idx.get(kit["scaffold"])
+    if not scaffold:
+        return None
+    mechs = [idx[m] for m in kit["mechanics"] if m in idx]
+    # also pull any extra mechanic whose tags strongly match the request (e.g. "scope")
+    for r in recipes:
+        if r.get("kind") == "mechanic" and r not in mechs:
+            if len(qt & set(t.lower() for t in r.get("tags", []))) >= 2:
+                mechs.append(r)
+    return {"target": target, "scaffold": scaffold, "mechanics": mechs}
+
 def cookbook_block(query, k=4):
-    """Format retrieved recipes as a system message for the build prompt, or '' if none."""
+    """Build-prompt context: a mechanic COMPOSITION KIT for recognized 3D targets,
+    else the lexical cookbook recipes. '' when nothing matches."""
+    comp = cookbook_compose(query)
+    if comp:
+        s = comp["scaffold"]
+        parts = [
+            "=== MECHANIC COMPOSITION KIT — assemble ONE file from these ===",
+            "This request maps to a known 3D target. START from the SCAFFOLD below (it is a",
+            "complete, working base) and BOLT ON each mechanic by wiring it into the marked",
+            "SLOTs / shared `state`/`cam` objects. Keep ONE camera and ONE rAF loop. Do not",
+            "rewrite the scaffold from scratch — extend it. Output ONE self-contained",
+            "<!doctype html>. No external deps. <script> stays at the end of <body>.\n",
+            f"--- SCAFFOLD (start here): {s['title']}\n{s['code']}",
+        ]
+        for r in comp["mechanics"]:
+            parts.append(f"--- BOLT-ON MECHANIC [{r.get('cat','')}]: {r['title']}  "
+                         f"(use when: {r.get('when','')})\n{r['code']}")
+        return "\n\n".join(parts)
     hits = cookbook_retrieve(query, k)
     if not hits:
         return ""

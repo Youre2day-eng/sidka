@@ -16,11 +16,11 @@ COOKBOOK = os.path.expanduser("~/.runai/cookbook.jsonl")
 R = []  # recipe list
 
 
-def rec(rid, title, tags, when, lang, code, kind="block"):
+def rec(rid, title, tags, when, lang, code, kind="block", cat=None, needs=None):
     R.append({
         "id": rid, "title": title, "tags": tags, "when": when,
         "lang": lang, "code": code.strip("\n"), "source": "seed",
-        "kind": kind, "score": 5,
+        "kind": kind, "score": 5, "cat": cat, "needs": needs or [],
     })
 
 
@@ -523,6 +523,332 @@ rec("gold-timer", "Gold-standard countdown / Pomodoro timer",
   </script>
 </body></html>
 """, kind="gold")
+
+
+# ============================================================================
+# 3D SCAFFOLDS + MECHANICS — ambitious targets (Doom/sniper/drone/voxel) are
+# built by starting from a COMPLETE, working 3D scaffold and bolting on mechanics.
+# Each scaffold verifies standalone; cookbook_compose() hands the model the right
+# scaffold + mechanic set for a request.
+# ============================================================================
+
+# ---- SCAFFOLD: first-person raycaster (Doom + sniper base) -----------------
+rec("scaffold-fps-raycast", "Walkable raycaster FPS base (Doom/Wolfenstein)",
+    ["doom", "wolfenstein", "raycast", "raycaster", "fps", "shooter", "mouselook", "wasd", "3d", "scaffold"],
+    "Start here for any first-person raycasting game (Doom/sniper). A COMPLETE, "
+    "working walkable maze: pointer-lock mouselook, WASD with wall collision, "
+    "distance-shaded walls. Bolt weapons/scope/HUD mechanics onto the SLOTs.",
+    "html", """
+<!doctype html><html><head><meta charset="utf-8"><title>FPS</title>
+<style>html,body{margin:0;height:100%;background:#0b0d12;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh;cursor:crosshair}</style></head>
+<body>
+  <canvas id="c"></canvas>
+  <script>
+    const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+    let W = cv.width = 480, H = cv.height = 300;          // internal res; CSS upscales
+    const MAP = ("1111111111 1000000001 1011110101 1000010001 1010011101 "
+                +"1010000101 1011110101 1000000001 1111111111").split(" ").map(r=>r.split("").map(Number));
+    const state = {
+      cam: { x: 2.5, y: 2.5, dir: 0, pitch: 0, fov: 1.05 },
+      keys: new Set(), MAP, tracers: [], enemies: [], ammo: 30,
+    };
+    // pointer-lock mouselook
+    cv.addEventListener('click', () => cv.requestPointerLock && cv.requestPointerLock());
+    document.addEventListener('mousemove', e => {
+      if (document.pointerLockElement !== cv) return;
+      state.cam.dir += (e.movementX || 0) * 0.0025;
+    });
+    addEventListener('keydown', e => state.keys.add(e.code));
+    addEventListener('keyup',   e => state.keys.delete(e.code));
+    // --- raycast core (shared by render + weapons) ---
+    function castRay(ang) {
+      const cos = Math.cos(ang), sin = Math.sin(ang);
+      for (let d = 0; d < 20; d += 0.02) {
+        const x = state.cam.x + cos * d, y = state.cam.y + sin * d;
+        const mx = x | 0, my = y | 0;
+        if (my < 0 || mx < 0 || my >= MAP.length || mx >= MAP[0].length) return { d, side: 0 };
+        if (MAP[my][mx]) {
+          const side = Math.abs(x - mx - 0.5) > Math.abs(y - my - 0.5) ? 0 : 1;
+          return { d, side };
+        }
+      }
+      return { d: 20, side: 0 };
+    }
+    function moveFPS(dt) {
+      const c = state.cam, sp = 3 * dt, cos = Math.cos(c.dir), sin = Math.sin(c.dir);
+      let dx = 0, dy = 0;
+      if (state.keys.has('KeyW')) { dx += cos; dy += sin; }
+      if (state.keys.has('KeyS')) { dx -= cos; dy -= sin; }
+      if (state.keys.has('KeyA')) { dx += sin; dy -= cos; }
+      if (state.keys.has('KeyD')) { dx -= sin; dy += cos; }
+      const nx = c.x + dx * sp, ny = c.y + dy * sp;
+      if (!MAP[c.y | 0][nx | 0]) c.x = nx;
+      if (!MAP[ny | 0][c.x | 0]) c.y = ny;
+    }
+    function renderWorld() {
+      ctx.fillStyle = '#222a3a'; ctx.fillRect(0, 0, W, H / 2);   // ceiling
+      ctx.fillStyle = '#10141c'; ctx.fillRect(0, H / 2, W, H / 2); // floor
+      for (let col = 0; col < W; col++) {
+        const ang = state.cam.dir + state.cam.fov * (col / W - 0.5);
+        const r = castRay(ang);
+        const corr = r.d * Math.cos(ang - state.cam.dir);          // fisheye fix
+        const h = Math.min(H, H / (corr + 0.0001));
+        const sh = Math.max(0, 1 - corr / 12) * (r.side ? 0.7 : 1);
+        const v = (sh * 200 + 25) | 0;
+        ctx.fillStyle = 'rgb(' + v + ',' + ((v*0.85)|0) + ',' + ((v*0.6)|0) + ')';
+        ctx.fillRect(col, (H - h) / 2, 1, h);
+      }
+    }
+    // SLOT: weapons  (replace/extend with gun-hitscan, scope-zoom mechanics)
+    function updateWeapons(dt) { /* bolt-on: fire, recoil, scope */ }
+    // SLOT: hud      (replace/extend with hud-crosshair mechanic)
+    function drawHUD() {
+      ctx.fillStyle = '#fff'; ctx.fillRect(W/2 - 1, H/2 - 6, 2, 12); ctx.fillRect(W/2 - 6, H/2 - 1, 12, 2);
+    }
+    let last = 0;
+    function frame(t) {
+      const dt = Math.min(0.05, (t - last) / 1000) || 0.016; last = t;
+      moveFPS(dt); updateWeapons(dt); renderWorld(); drawHUD();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body></html>
+""", kind="scaffold", cat="render"),
+
+# ---- SCAFFOLD: wireframe 3D flight (drone base) ----------------------------
+rec("scaffold-wire-flight", "Wireframe 3D flight base (FPV drone)",
+    ["drone", "fpv", "wireframe", "flight", "simulator", "3d", "mouselook", "wasd", "scaffold"],
+    "Start here for a wireframe 3D flyer/drone sim. COMPLETE: mouse look (yaw/pitch), "
+    "WASD+Space/Shift 6DOF flight with damping, perspective-projected wireframe terrain grid.",
+    "html", """
+<!doctype html><html><head><meta charset="utf-8"><title>Drone</title>
+<style>html,body{margin:0;height:100%;background:#05070d;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh}</style></head>
+<body>
+  <canvas id="c"></canvas>
+  <script>
+    const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+    let W = cv.width = 640, H = cv.height = 400;
+    const cam = { x: 0, y: 6, z: -12, yaw: 0, pitch: -0.15 };
+    const vel = { x: 0, y: 0, z: 0 }, keys = new Set();
+    cv.addEventListener('click', () => cv.requestPointerLock && cv.requestPointerLock());
+    document.addEventListener('mousemove', e => {
+      if (document.pointerLockElement !== cv) return;
+      cam.yaw += (e.movementX || 0) * 0.0025;
+      cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch - (e.movementY || 0) * 0.0025));
+    });
+    addEventListener('keydown', e => keys.add(e.code));
+    addEventListener('keyup',   e => keys.delete(e.code));
+    function project(p) {
+      let dx = p.x - cam.x, dy = p.y - cam.y, dz = p.z - cam.z;
+      const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      let x = dx * cy - dz * sy, z = dx * sy + dz * cy;
+      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      let y = dy * cp - z * sp; z = dy * sp + z * cp;
+      if (z < 0.2) return null;
+      return { sx: W / 2 + x * 320 / z, sy: H / 2 - y * 320 / z };
+    }
+    // wireframe ground grid
+    const GRID = [];
+    for (let i = -10; i <= 10; i++) {
+      GRID.push([{ x: i*2, y: 0, z: -20 }, { x: i*2, y: 0, z: 20 }]);
+      GRID.push([{ x: -20, y: 0, z: i*2 }, { x: 20, y: 0, z: i*2 }]);
+    }
+    function stepFlight(dt) {
+      const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      let thrust = 0, strafe = 0, lift = 0;
+      if (keys.has('KeyW')) thrust += 1; if (keys.has('KeyS')) thrust -= 1;
+      if (keys.has('KeyD')) strafe += 1; if (keys.has('KeyA')) strafe -= 1;
+      if (keys.has('Space')) lift += 1;  if (keys.has('ShiftLeft')) lift -= 1;
+      const a = 14;
+      vel.x += (sy * thrust + cy * strafe) * a * dt;
+      vel.z += (cy * thrust - sy * strafe) * a * dt;
+      vel.y += lift * a * dt;
+      vel.x *= 0.9; vel.y *= 0.9; vel.z *= 0.9;
+      cam.x += vel.x * dt; cam.y += vel.y * dt; cam.z += vel.z * dt;
+    }
+    function draw() {
+      ctx.fillStyle = '#05070d'; ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = '#2bd6a0'; ctx.lineWidth = 1; ctx.beginPath();
+      for (const [a, b] of GRID) {
+        const pa = project(a), pb = project(b);
+        if (!pa || !pb) continue;
+        ctx.moveTo(pa.sx, pa.sy); ctx.lineTo(pb.sx, pb.sy);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#9aa'; ctx.font = '12px monospace';
+      ctx.fillText('alt ' + cam.y.toFixed(1) + '  WASD+Space/Shift, mouse look', 12, 20);
+    }
+    let last = 0;
+    function frame(t) {
+      const dt = Math.min(0.05, (t - last) / 1000) || 0.016; last = t;
+      stepFlight(dt); draw(); requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body></html>
+""", kind="scaffold", cat="render"),
+
+# ---- SCAFFOLD: voxel world (Minecraft base) --------------------------------
+rec("scaffold-voxel", "Voxel world base (Minecraft-style)",
+    ["minecraft", "voxel", "blocks", "world", "3d", "fly", "place", "break", "mouselook", "wasd", "scaffold"],
+    "Start here for a Minecraft-style voxel world. COMPLETE: fly camera (mouse look + "
+    "WASD/Space/Shift), a small block terrain rendered as depth-sorted projected cube "
+    "tops. Add place/break by ray-marching the grid from the camera.",
+    "html", """
+<!doctype html><html><head><meta charset="utf-8"><title>Voxels</title>
+<style>html,body{margin:0;height:100%;background:#7ec0ee;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh}</style></head>
+<body>
+  <canvas id="c"></canvas>
+  <script>
+    const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+    let W = cv.width = 640, H = cv.height = 400;
+    const cam = { x: 4, y: 6, z: -6, yaw: 0.5, pitch: -0.5 };
+    const vel = { x: 0, y: 0, z: 0 }, keys = new Set();
+    // sparse voxel grid: key "x,y,z" -> color
+    const world = new Map();
+    function key(x,y,z){ return x+','+y+','+z; }
+    function setV(x,y,z,c){ if(c) world.set(key(x,y,z),c); else world.delete(key(x,y,z)); }
+    function getV(x,y,z){ return world.get(key(x,y,z)); }
+    for (let x=0;x<8;x++) for (let z=0;z<8;z++){
+      const h = 1 + ((x*z+x+z)%3);
+      for (let y=0;y<h;y++) setV(x,y,z, y===h-1 ? '#6ab04c' : '#7a5230');
+    }
+    cv.addEventListener('click', () => cv.requestPointerLock && cv.requestPointerLock());
+    document.addEventListener('mousemove', e => {
+      if (document.pointerLockElement !== cv) return;
+      cam.yaw += (e.movementX||0)*0.0025;
+      cam.pitch = Math.max(-1.4, Math.min(1.4, cam.pitch - (e.movementY||0)*0.0025));
+    });
+    addEventListener('keydown', e => keys.add(e.code));
+    addEventListener('keyup',   e => keys.delete(e.code));
+    function project(p){
+      let dx=p.x-cam.x, dy=p.y-cam.y, dz=p.z-cam.z;
+      const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw);
+      let x=dx*cy-dz*sy, z=dx*sy+dz*cy;
+      const cp=Math.cos(cam.pitch), sp=Math.sin(cam.pitch);
+      let y=dy*cp-z*sp; z=dy*sp+z*cp;
+      if (z<0.2) return null;
+      return { sx: W/2 + x*340/z, sy: H/2 - y*340/z, z };
+    }
+    function stepFly(dt){
+      const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw);
+      let th=0,st=0,lf=0;
+      if(keys.has('KeyW'))th+=1; if(keys.has('KeyS'))th-=1;
+      if(keys.has('KeyD'))st+=1; if(keys.has('KeyA'))st-=1;
+      if(keys.has('Space'))lf+=1; if(keys.has('ShiftLeft'))lf-=1;
+      const a=10;
+      vel.x+=(sy*th+cy*st)*a*dt; vel.z+=(cy*th-sy*st)*a*dt; vel.y+=lf*a*dt;
+      vel.x*=0.85; vel.y*=0.85; vel.z*=0.85;
+      cam.x+=vel.x*dt; cam.y+=vel.y*dt; cam.z+=vel.z*dt;
+    }
+    function draw(){
+      ctx.fillStyle='#7ec0ee'; ctx.fillRect(0,0,W,H);
+      const cubes=[];
+      for (const [k,c] of world){
+        const [x,y,z]=k.split(',').map(Number);
+        cubes.push({x,y,z,c, d:(x-cam.x)**2+(y-cam.y)**2+(z-cam.z)**2});
+      }
+      cubes.sort((a,b)=>b.d-a.d);
+      for (const v of cubes){
+        const top=[project({x:v.x,y:v.y+1,z:v.z}),project({x:v.x+1,y:v.y+1,z:v.z}),
+                   project({x:v.x+1,y:v.y+1,z:v.z+1}),project({x:v.x,y:v.y+1,z:v.z+1})];
+        if (top.some(p=>!p)) continue;
+        ctx.fillStyle=v.c; ctx.beginPath(); ctx.moveTo(top[0].sx,top[0].sy);
+        for(let i=1;i<4;i++) ctx.lineTo(top[i].sx,top[i].sy);
+        ctx.closePath(); ctx.fill(); ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.stroke();
+      }
+      ctx.fillStyle='#123'; ctx.font='12px monospace';
+      ctx.fillText('fly: WASD + Space/Shift, mouse look', 12, 20);
+    }
+    let last=0;
+    function frame(t){
+      const dt=Math.min(0.05,(t-last)/1000)||0.016; last=t;
+      stepFly(dt); draw(); requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body></html>
+""", kind="scaffold", cat="render"),
+
+# ---- MECHANIC: hitscan gun (bolts onto fps-raycast) ------------------------
+rec("gun-hitscan", "Hitscan gun + tracer (bolt onto the FPS scaffold)",
+    ["gun", "hitscan", "shoot", "fire", "weapon", "bullet", "tracer", "doom", "ammo"],
+    "Add a gun to the raycaster scaffold. On click, cast a ray down cam.dir, kill the "
+    "first enemy in line, draw a fading tracer + muzzle flash. Uses the scaffold's castRay.",
+    "js", """
+// In updateWeapons(dt): consume fire input; in renderWorld()/drawHUD append the tracer.
+let _muzzle = 0;
+cv.addEventListener('mousedown', e => {
+  if (e.button !== 0 || document.pointerLockElement !== cv) return;
+  if (state.ammo <= 0) return;
+  state.ammo--; _muzzle = 3;
+  const r = castRay(state.cam.dir);
+  state.tracers.push({ d: r.d, life: 5 });
+  for (const en of state.enemies) {
+    if (en.dead) continue;
+    const a = Math.atan2(en.y - state.cam.y, en.x - state.cam.x);
+    const dd = Math.hypot(en.x - state.cam.x, en.y - state.cam.y);
+    let da = ((a - state.cam.dir + Math.PI) % (2*Math.PI)) - Math.PI;
+    if (Math.abs(da) < 0.12 && dd < r.d + 0.5) { en.dead = true; break; }
+  }
+});
+function drawGun() {                       // call at the end of drawHUD()
+  if (_muzzle > 0) { ctx.fillStyle = 'rgba(255,220,120,' + (_muzzle/3) + ')';
+    ctx.fillRect(W/2 - 14, H/2 - 14, 28, 28); _muzzle--; }
+  ctx.fillStyle = '#0f1620'; ctx.fillRect(W/2 - 10, H - 40, 20, 40);   // simple gun barrel
+  ctx.fillStyle = '#fff'; ctx.font = '14px monospace'; ctx.fillText('AMMO ' + state.ammo, 12, H - 14);
+}
+""", kind="mechanic", cat="weapon", needs=["raycast"]),
+
+# ---- MECHANIC: scope zoom (bolts onto fps-raycast) -------------------------
+rec("scope-zoom", "Scope zoom + overlay (bolt onto the FPS scaffold)",
+    ["scope", "zoom", "sniper", "ads", "aim", "fov", "magnify", "overlay"],
+    "Add right-click scope to the raycaster scaffold: lerp cam.fov toward a narrow "
+    "zoom FOV (and lower mouse sensitivity), draw a circular scope vignette + crosshair.",
+    "js", """
+state.baseFov = state.cam.fov; state.zoomFov = 0.4; state.scoped = false;
+cv.addEventListener('mousedown', e => { if (e.button === 2) state.scoped = true; });
+cv.addEventListener('mouseup',   e => { if (e.button === 2) state.scoped = false; });
+cv.addEventListener('contextmenu', e => e.preventDefault());
+function updateScope(dt) {                  // call inside updateWeapons(dt)
+  const target = state.scoped ? state.zoomFov : state.baseFov;
+  state.cam.fov += (target - state.cam.fov) * Math.min(1, dt * 12);
+}
+function drawScope() {                       // call at the end of drawHUD()
+  if (state.cam.fov > (state.baseFov + state.zoomFov) / 2) return; // only when zoomed in
+  const R = Math.min(W, H) * 0.42;
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,.9)'; ctx.beginPath();
+  ctx.rect(0, 0, W, H); ctx.arc(W/2, H/2, R, 0, Math.PI*2, true); ctx.fill('evenodd');
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.beginPath();
+  ctx.moveTo(W/2, H/2 - R); ctx.lineTo(W/2, H/2 + R);
+  ctx.moveTo(W/2 - R, H/2); ctx.lineTo(W/2 + R, H/2); ctx.stroke();
+  ctx.restore();
+}
+""", kind="mechanic", cat="camera", needs=["raycast"]),
+
+# ---- MECHANIC: HUD crosshair (bolts onto any FPS) --------------------------
+rec("hud-crosshair", "HUD overlay: crosshair, health, hit marker",
+    ["hud", "crosshair", "health", "ammo", "overlay", "ui", "fps", "reticle"],
+    "Add a clean HUD pass to any first-person scaffold. Draw AFTER the 3D render so it "
+    "is never cleared. Crosshair at center, health/ammo text, brief hit-marker flash.",
+    "js", """
+function drawCrosshairHUD(opts) {            // call at the end of drawHUD()
+  opts = opts || {};
+  const cx = W/2, cy = H/2;
+  ctx.strokeStyle = '#e8ecf4'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.moveTo(cx-8, cy); ctx.lineTo(cx-2, cy); ctx.moveTo(cx+2, cy); ctx.lineTo(cx+8, cy);
+  ctx.moveTo(cx, cy-8); ctx.lineTo(cx, cy-2); ctx.moveTo(cx, cy+2); ctx.lineTo(cx, cy+8);
+  ctx.stroke();
+  ctx.fillStyle = '#e8ecf4'; ctx.font = '14px system-ui';
+  if (opts.health != null) ctx.fillText('HP ' + opts.health, 12, H - 14);
+  if (opts.ammo != null)   ctx.fillText('AMMO ' + opts.ammo, 100, H - 14);
+}
+""", kind="mechanic", cat="ui", needs=[]),
 
 
 def main():
