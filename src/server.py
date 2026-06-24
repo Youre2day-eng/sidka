@@ -861,19 +861,20 @@ PREVIEW_DIR = os.path.join(RUNAI_DIR, "preview")
 # Injected into previewed pages so a JS error shows a visible overlay instead of a black void.
 _PREVIEW_HARNESS = """<script>
 (function(){
-  function show(msg){
+  function report(msg){
     var d=document.getElementById('__sidka_err__');
     if(!d){d=document.createElement('div');d.id='__sidka_err__';
       d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';
       (document.body||document.documentElement).appendChild(d);}
     d.textContent='\\u26a0 '+msg;
+    try { window.parent.postMessage({type:'sidka-preview-error',msg:msg},'*'); } catch(x){}
   }
   window.addEventListener('error',function(e){
     var loc=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';
-    show((e.message||'Script error')+loc);
+    report((e.message||'Script error')+loc);
   },true);
   window.addEventListener('unhandledrejection',function(e){
-    show('Unhandled promise rejection: '+((e.reason&&e.reason.message)||e.reason));
+    report('Unhandled promise rejection: '+((e.reason&&e.reason.message)||e.reason));
   });
 })();
 </script>"""
@@ -2185,7 +2186,7 @@ body,.main,.msgs{background:var(--bg);color:var(--text);font-family:var(--sans);
         <button class="ghost" id="previewStopBtn" title="Stop dev server" style="font-size:11px;padding:2px 8px;display:none">stop</button>
         <button class="ghost" id="previewNewTabBtn" title="Open in new tab" style="font-size:11px;padding:2px 8px">&#8599;</button>
       </div>
-      <div class="preview-body" id="previewBody">
+      <div class="preview-body" id="previewBody" style="position:relative">
         <div class="preview-empty" id="previewEmpty">
           <div style="font-size:13px;color:var(--dim)">Pick a project or connect a port</div>
           <button class="ghost" onclick="openProjectPicker()" style="font-size:12px">&#9638; Browse Cld projects</button>
@@ -2438,7 +2439,7 @@ window._artifacts = window._artifacts || {};
 let _artifactSeq = 0;
 
 // surface JS errors as a visible overlay inside the inline iframe (not a black void)
-const _PREVIEW_HARNESS = `<script>(function(){function show(m){var d=document.getElementById('__sidka_err__');if(!d){d=document.createElement('div');d.id='__sidka_err__';d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';(document.body||document.documentElement).appendChild(d);}d.textContent='\\u26a0 '+m;}window.addEventListener('error',function(e){var l=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';show((e.message||'Script error')+l);},true);window.addEventListener('unhandledrejection',function(e){show('Unhandled rejection: '+((e.reason&&e.reason.message)||e.reason));});})();<\/script>`;
+const _PREVIEW_HARNESS = `<script>(function(){function report(m){var d=document.getElementById('__sidka_err__');if(!d){d=document.createElement('div');d.id='__sidka_err__';d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';(document.body||document.documentElement).appendChild(d);}d.textContent='\\u26a0 '+m;try{window.parent.postMessage({type:'sidka-preview-error',msg:m},'*');}catch(x){}}window.addEventListener('error',function(e){var l=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';report((e.message||'Script error')+l);},true);window.addEventListener('unhandledrejection',function(e){report('Unhandled rejection: '+((e.reason&&e.reason.message)||e.reason));});})();<\/script>`;
 function injectHarness(html) {
   if (html.indexOf('__sidka_err__') !== -1) return html;
   const m = html.match(/<head[^>]*>/i);
@@ -3403,6 +3404,9 @@ async function probeDevServer() {
 
 function connectPreview(url, label) {
   _previewUrl = url;
+  // clear any stale error banner from the previous artifact
+  $('#previewErrBanner').style.display = 'none';
+  _lastPreviewErr = '';
   const frame = $('#previewFrame');
   const badge = $('#previewBadge');
   if (label) {
@@ -3553,6 +3557,31 @@ $('#previewStopBtn').onclick = async () => {
 $('#previewPortInput').onkeydown = e => {
   if (e.key === 'Enter') $('#previewConnectBtn').click();
 };
+
+// ---- preview error feedback loop ----
+let _lastPreviewErr = '';
+
+window.addEventListener('message', e => {
+  if (!e.data || e.data.type !== 'sidka-preview-error') return;
+  _lastPreviewErr = e.data.msg || '';
+  const banner = $('#previewErrBanner');
+  $('#previewErrText').textContent = '⚠ ' + _lastPreviewErr;
+  banner.style.display = 'flex';
+});
+
+function dismissPreviewErr() {
+  $('#previewErrBanner').style.display = 'none';
+  _lastPreviewErr = '';
+}
+
+async function fixPreviewError() {
+  if (!_lastPreviewErr) return;
+  dismissPreviewErr();
+  // compose a targeted fix request and submit it as a chat message
+  const inp = $('#input');
+  inp.value = 'The preview just threw this error: "' + _lastPreviewErr + '". Please fix the code and show the corrected version.';
+  await send();
+}
 
 // refresh tree + re-probe on session change (patch the existing onchange)
 const _origSessionChange = $('#session').onchange;
@@ -3782,6 +3811,11 @@ async function triggerReview(action) {
 // ---- init ----
 loadState();
 </script>
+<div id="previewErrBanner" style="display:none;position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:min(720px,92vw);background:#2a0d0d;color:#ffb4b4;font:11px/1.5 ui-monospace,Menlo,monospace;padding:9px 12px;border:1px solid #e05050;border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.5);align-items:flex-start;gap:8px;z-index:2147483646">
+  <span style="flex:1;white-space:pre-wrap;word-break:break-word" id="previewErrText"></span>
+  <button onclick="fixPreviewError()" style="flex-shrink:0;background:#e05050;color:#fff;border:none;border-radius:9999px;padding:3px 12px;font:11px ui-monospace,Menlo,monospace;cursor:pointer">&#9889; Fix it</button>
+  <button onclick="dismissPreviewErr()" style="flex-shrink:0;background:none;border:none;color:#ffb4b4;font:13px monospace;cursor:pointer;opacity:.7">&#x2715;</button>
+</div>
 </body>
 </html>"""
 
