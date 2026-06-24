@@ -239,9 +239,12 @@ def chat_stream(session_name, text, model_choice):
         note = "\n\n---\n".join(f"From {os.path.basename(h['file'])}:\n{h['chunk']}" for h in hits)
         extras.append("Relevant context from the user's indexed notes:\n" + note)
     msgs = eng.build_messages(session, category, extras)
+    # count cookbook recipes pulled in (for the meta badge)
+    recipes = len(eng.cookbook_retrieve(text)) if category in ("build", "agent") else 0
 
     def gen():
-        yield _sse({"type": "meta", "model": model, "category": category, "notes": len(hits)})
+        yield _sse({"type": "meta", "model": model, "category": category,
+                    "notes": len(hits), "recipes": recipes})
         parts = []
         try:
             for chunk in ollama.chat(model=model, messages=msgs, stream=True):
@@ -916,6 +919,27 @@ def api_preview_save():
         with open(path, "w", encoding="utf-8") as f:
             f.write(html)
     return jsonify(url=f"/preview/{session}/{fname}", index=f"/preview/{session}/")
+
+
+@app.route("/api/cookbook/learn", methods=["POST"])
+def api_cookbook_learn():
+    """Capture a clean, working artifact as a reusable recipe. The client calls this
+    when a preview has rendered for a moment with no error reported by the harness."""
+    d = request.get_json(force=True) or {}
+    code = d.get("html") or d.get("code") or ""
+    title = (d.get("title") or "").strip()
+    if not code.strip():
+        return jsonify(error="no code"), 400
+    rid = eng.cookbook_learn(title or "Learned artifact", code,
+                             lang=d.get("lang", "html"), tags=d.get("tags"))
+    return jsonify(ok=bool(rid), id=rid)
+
+
+@app.route("/api/cookbook", methods=["GET"])
+def api_cookbook_list():
+    """List recipes (id/title/kind/source/tags) for inspection in the UI."""
+    return jsonify([{k: r.get(k) for k in ("id", "title", "kind", "source", "tags", "lang")}
+                    for r in eng.load_cookbook()])
 
 
 @app.route("/preview/<session>/")
@@ -2485,6 +2509,26 @@ async function openLivePreview(id) {
     $('#previewBtn').style.color = 'var(--acc)';
   }
   connectPreview(res.url, 'live');
+  // learn-on-clean: if this interactive artifact runs error-free for a beat, save it
+  const a = window._artifacts[id];
+  if (a && a.kind === 'html' && /<script[\s>]/i.test(a.code)) maybeLearnArtifact(a.code);
+}
+
+// Capture a working artifact as a cookbook recipe once it has rendered clean.
+function maybeLearnArtifact(html) {
+  const seqAtStart = _previewErrSeq;
+  setTimeout(async () => {
+    if (_previewErrSeq !== seqAtStart) return;          // an error fired -> don't learn broken code
+    const title = (html.match(/<title[^>]*>([^<]+)<\/title>/i) || [])[1] || '';
+    try {
+      const r = await fetch('/api/cookbook/learn', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html, title })
+      });
+      const j = await r.json();
+      if (j && j.ok && j.id) console.log('[cookbook] learned recipe', j.id);
+    } catch (e) {}
+  }, 2500);
 }
 
 async function popoutArtifact(id) {
@@ -2757,7 +2801,9 @@ async function sendChat(txt, bubble) {
       let e;
       try { e = JSON.parse(line.slice(6)); } catch { continue; }
       if (e.type === 'meta') {
-        who.textContent = `ai · ${e.category} · ${e.model}` + (e.notes ? ` · +${e.notes} notes` : '');
+        who.textContent = `ai · ${e.category} · ${e.model}`
+          + (e.notes ? ` · +${e.notes} notes` : '')
+          + (e.recipes ? ` · ⚒ ${e.recipes} recipes` : '');
       } else if (e.type === 'token') {
         acc += e.text;
         bubble.innerHTML = fmt(acc);
@@ -3560,9 +3606,11 @@ $('#previewPortInput').onkeydown = e => {
 
 // ---- preview error feedback loop ----
 let _lastPreviewErr = '';
+let _previewErrSeq = 0;   // bumped on every preview error; used to gate learn-on-clean
 
 window.addEventListener('message', e => {
   if (!e.data || e.data.type !== 'sidka-preview-error') return;
+  _previewErrSeq++;
   _lastPreviewErr = e.data.msg || '';
   const banner = $('#previewErrBanner');
   $('#previewErrText').textContent = '⚠ ' + _lastPreviewErr;

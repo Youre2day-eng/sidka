@@ -172,6 +172,87 @@ SESSION_DIR   = os.path.join(RUNAI_DIR, "sessions")
 INDEX_FILE    = os.path.join(RUNAI_DIR, "index.json")
 SKILLS_DIR    = os.path.join(RUNAI_DIR, "skills")
 LEGACY_MEMORY = os.path.expanduser("~/memory.json")
+COOKBOOK_FILE = os.path.join(RUNAI_DIR, "cookbook.jsonl")
+
+
+# ---------------------------------------------------------------- code cookbook
+# A retrieval store of known-good, composable code recipes. On a build request the
+# model is handed the most relevant blocks (loop, input, collision...) plus any gold
+# reference, so it TAGS TOGETHER proven pieces instead of inventing broken code.
+_STOP = {"the","a","an","make","build","create","me","with","that","this","and","for",
+         "to","of","in","on","it","my","your","please","some","sort","need","want","using"}
+
+def _tok(text):
+    return [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in _STOP and len(w) > 1]
+
+def load_cookbook():
+    out = []
+    if not os.path.exists(COOKBOOK_FILE):
+        return out
+    try:
+        with open(COOKBOOK_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    out.append(json.loads(line))
+    except Exception:
+        pass
+    return out
+
+def cookbook_retrieve(query, k=4):
+    """Lexically score recipes against the request; return the top-k most relevant.
+    Always surfaces at least one matching 'gold' reference when the request hits it."""
+    recipes = load_cookbook()
+    if not recipes:
+        return []
+    qt = set(_tok(query))
+    if not qt:
+        return []
+    scored = []
+    for r in recipes:
+        hay = set(t.lower() for t in r.get("tags", [])) | set(_tok(r.get("title", ""))) | set(_tok(r.get("when", "")))
+        overlap = len(qt & hay)
+        if not overlap:
+            continue
+        # weight: tag hits matter most; gold references and proven (high-score) recipes win ties
+        tag_hits = len(qt & set(t.lower() for t in r.get("tags", [])))
+        s = overlap * 2 + tag_hits + (3 if r.get("kind") == "gold" else 0) + min(r.get("score", 0), 5) * 0.1
+        scored.append((s, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[:k]]
+
+def cookbook_block(query, k=4):
+    """Format retrieved recipes as a system message for the build prompt, or '' if none."""
+    hits = cookbook_retrieve(query, k)
+    if not hits:
+        return ""
+    parts = ["=== CODE COOKBOOK (proven building blocks — adapt and COMPOSE these) ===",
+             "These are known-good, tested patterns retrieved for this request. Tag the relevant",
+             "pieces together and adapt them to the exact ask. Prefer adapting a 'gold' reference",
+             "over writing from scratch. Keep everything in ONE self-contained <!doctype html>.\n"]
+    for r in hits:
+        parts.append(f"--- {r['title']}  [{r.get('lang','')}]  (use when: {r.get('when','')})\n{r['code']}")
+    return "\n\n".join(parts)
+
+def cookbook_learn(title, code, lang="html", tags=None, kind="learned"):
+    """Append a clean, working artifact as a new recipe (deduped by code hash)."""
+    code = (code or "").strip()
+    if len(code) < 60:
+        return None
+    import hashlib
+    h = "lr_" + hashlib.sha1(code.encode("utf-8")).hexdigest()[:10]
+    existing = load_cookbook()
+    if any(r.get("id") == h for r in existing):
+        return h  # already learned
+    if not tags:
+        tags = _tok(title)[:8] or ["learned"]
+    rec = {"id": h, "title": title[:80] or "Learned snippet", "tags": tags, "lang": lang,
+           "when": "Learned from a preview that ran clean.", "code": code,
+           "source": "learned", "kind": kind, "score": 3}
+    os.makedirs(os.path.dirname(COOKBOOK_FILE), exist_ok=True)
+    with open(COOKBOOK_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return h
 
 # runtime-only state (not persisted)
 RT = {"override": None, "agent": False, "rag": True, "file": None}  # file = (name, content)
@@ -306,6 +387,14 @@ def build_messages(session, category, extras=None):
     if category in ("agent", "build", "technical"):
         prompt = prompt + _AGENT_CAPABILITIES
     msgs = [{"role": "system", "content": prompt}]
+    # On build requests, retrieve known-good recipes for the last user ask and hand
+    # them to the model as composable reference patterns (the "code skills" memory).
+    if category in ("build", "agent"):
+        last_user = next((m["content"] for m in reversed(session.get("messages", []))
+                          if m.get("role") == "user"), "")
+        block = cookbook_block(last_user)
+        if block:
+            msgs.append({"role": "system", "content": block})
     if session["summary"]:
         msgs.append({"role": "system", "content": "Summary of earlier conversation: " + session["summary"]})
     if RT["file"]:

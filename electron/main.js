@@ -190,6 +190,14 @@ function ensureRunaiDirs() {
       }
     }
   }
+  // Seed the code cookbook (composable recipes the build model learns from) once.
+  const cookbookSrc = DEV
+    ? path.join(__dirname, '..', 'src', 'cookbook.jsonl')
+    : path.join(process.resourcesPath, 'server', 'cookbook.jsonl');
+  const cookbookDest = path.join(RUNAI, 'cookbook.jsonl');
+  if (fs.existsSync(cookbookSrc) && !fs.existsSync(cookbookDest)) {
+    fs.copyFileSync(cookbookSrc, cookbookDest);
+  }
 }
 
 // ── IPC handlers ───────────────────────────────────────────────────────────
