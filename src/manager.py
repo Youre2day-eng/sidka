@@ -350,7 +350,8 @@ def grow_generate(target, hint_tags=None, prior_error=""):
     if prior_error:
         user += f"\n\nThe previous attempt FAILED verification with:\n{prior_error}\nReturn a corrected FULL document."
     msgs = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}]
-    text = _gen_text(_guard(lambda: ollama.chat(model=MODELS["build"], messages=msgs)))
+    # ollama.chat returns {message:{content}}, extracted by _chunk_text (not _gen_text)
+    text = _chunk_text(_guard(lambda: ollama.chat(model=MODELS["build"], messages=msgs)))
     return _extract_doc(text)
 
 def grow_one(target, tags=None, kind="gold", max_attempts=3):
