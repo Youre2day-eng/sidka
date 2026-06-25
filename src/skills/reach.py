@@ -9,8 +9,25 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
+
+
+def _ytdlp_cmd():
+    """Return the command prefix to run yt-dlp, or None if unavailable. Prefers the
+    module on the running interpreter (works regardless of PATH), then a binary."""
+    try:
+        import yt_dlp  # noqa: F401
+        return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        pass
+    # binary on PATH, or alongside the current python (venv/bin)
+    for cand in (shutil.which("yt-dlp"),
+                 os.path.join(os.path.dirname(sys.executable), "yt-dlp")):
+        if cand and os.path.exists(cand):
+            return [cand]
+    return None
 
 NAME = "reach"
 DESCRIPTION = (
@@ -124,18 +141,43 @@ def _search(args):
     return "\n".join(lines)
 
 
+def _yt_id(url):
+    m = re.search(r"(?:v=|/embed/|/shorts/|youtu\.be/)([\w-]{11})", url)
+    return m.group(1) if m else (url if re.fullmatch(r"[\w-]{11}", url or "") else None)
+
+
 def _youtube(args):
-    url = _norm_url(args.get("url") or args.get("query"))
+    raw = args.get("url") or args.get("query") or ""
+    url = _norm_url(raw)
     if not url:
         return "Error: a YouTube url is required."
-    if shutil.which("yt-dlp"):
+    # Primary: youtube-transcript-api (timedtext endpoint, no PO token needed).
+    vid = _yt_id(raw) or _yt_id(url)
+    if vid:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi as _Y
+            data = None
+            try:
+                data = _Y.get_transcript(vid, languages=["en", "en-US", "en-GB"])
+                segs = [s["text"] for s in data]
+            except AttributeError:
+                fetched = _Y().fetch(vid, languages=["en", "en-US", "en-GB"])
+                segs = [s.text for s in fetched]
+            body = " ".join(t for t in segs if t and t.strip())
+            if body.strip():
+                note = "" if len(body) <= _MAX else f"\n\n…[truncated at {_MAX} chars]"
+                return f"# Transcript: {url}\n\n{body[:_MAX]}{note}"
+        except Exception:
+            pass  # fall through to yt-dlp / Jina
+    yt = _ytdlp_cmd()
+    if yt:
         try:
             import tempfile, glob
             d = tempfile.mkdtemp(prefix="reach_yt_")
             subprocess.run(
-                ["yt-dlp", "--skip-download", "--write-auto-sub", "--write-sub",
+                yt + ["--skip-download", "--write-auto-sub", "--write-sub",
                  "--sub-lang", "en.*", "--sub-format", "vtt", "-o", os.path.join(d, "s"), url],
-                capture_output=True, timeout=90)
+                capture_output=True, timeout=120)
             vtts = glob.glob(os.path.join(d, "*.vtt"))
             if vtts:
                 raw = open(vtts[0], encoding="utf-8", errors="ignore").read()
@@ -247,7 +289,12 @@ def _doctor(args):
     lines.append(f"  web read (Jina Reader):   {'OK' if not err else 'unreachable — ' + err}")
     _, serr = _get("https://s.jina.ai/test", timeout=10)
     lines.append(f"  web search (Jina/DDG):    {'OK' if not serr else 'Jina down, DuckDuckGo fallback'}")
-    lines.append(f"  youtube transcripts:      {'OK (yt-dlp)' if shutil.which('yt-dlp') else 'install yt-dlp (pip install yt-dlp)'}")
+    try:
+        import youtube_transcript_api  # noqa: F401
+        _ytcap = "OK (youtube-transcript-api)"
+    except Exception:
+        _ytcap = "OK (yt-dlp)" if _ytdlp_cmd() else "install youtube-transcript-api"
+    lines.append(f"  youtube transcripts:      {_ytcap}")
     lines.append(f"  rss feeds:                OK (stdlib)")
     lines.append(f"  github:                   {'OK (gh)' if shutil.which('gh') else 'install gh (brew install gh)'}")
     lines.append("\nCookie-based platforms (Twitter/Reddit/Xiaohongshu) are not enabled in this "
