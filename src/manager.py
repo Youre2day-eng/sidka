@@ -565,6 +565,63 @@ def route(user_prompt):
         return "fast"
 
 
+# ---------------------------------------------------------------- auto web reach
+_WEB_INTENT = re.compile(
+    r"\b(search\s+for|look\s*up|google|bing|web\s+search|find\s+online|find\s+info|"
+    r"latest\s+news|breaking\s+news|current\s+news|what'?s?\s+in\s+the\s+news|"
+    r"what'?s?\s+happening|what\s+happened\s+(with|to|in)|"
+    r"today'?s?\s+(news|weather|score|price|update)|"
+    r"current\s+(weather|price|score|standings|status|update)|"
+    r"right\s+now|this\s+(week|month|year)'?s?\s+(news|update|score)|"
+    r"stock\s+price|weather\s+(in|for|at)|news\s+(on|about|for))\b",
+    re.I
+)
+_URL_IN_TEXT = re.compile(r"https?://\S+")
+_YT_DOMAIN   = re.compile(r"(youtube\.com|youtu\.be)")
+
+
+def has_web_intent(text):
+    """Cheap check — no I/O. Returns 'url', 'youtube', 'search', or None."""
+    urls = _URL_IN_TEXT.findall(text)
+    for u in urls:
+        if _YT_DOMAIN.search(u):
+            return "youtube"
+    if urls:
+        return "url"
+    if _WEB_INTENT.search(text):
+        return "search"
+    return None
+
+
+def web_intent_fetch(text, skills):
+    """Call the reach skill for live web data. Returns (kind, result_str) or (None, None)."""
+    reach = skills.get("reach")
+    if not reach:
+        return None, None
+    kind = has_web_intent(text)
+    if not kind:
+        return None, None
+    try:
+        if kind == "youtube":
+            url = next(u for u in _URL_IN_TEXT.findall(text) if _YT_DOMAIN.search(u))
+            result = reach.run({"action": "youtube", "url": url})
+            return "youtube", f"[Live YouTube transcript]\n{result}"
+        if kind == "url":
+            url = _URL_IN_TEXT.findall(text)[0]
+            result = reach.run({"action": "read", "url": url, "limit": 6000})
+            return "url", f"[Live web page content]\n{result}"
+        # search
+        query = re.sub(
+            r"^\s*(search\s+(for)?|look\s*up|google|bing|web\s+search(\s+for)?|"
+            r"find\s+(online|info\s+(on|about)?)?)\s*",
+            "", text, flags=re.I
+        ).strip() or text.strip()
+        result = reach.run({"action": "search", "query": query, "limit": 8})
+        return "search", f"[Live web search results]\n{result}"
+    except Exception as e:
+        return kind, f"[Web search failed: {e}]"
+
+
 # ---------------------------------------------------------------- context
 def build_messages(session, category, extras=None):
     # Per-session system prompt (project isolation) overrides the category default.

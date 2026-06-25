@@ -233,18 +233,28 @@ def chat_stream(session_name, text, model_choice):
     model = eng.MODELS[category]
     session["messages"].append({"role": "user", "content": text})
 
-    extras = []
+    base_extras = []
     hits = eng.retrieve(text)
     if hits:
         note = "\n\n---\n".join(f"From {os.path.basename(h['file'])}:\n{h['chunk']}" for h in hits)
-        extras.append("Relevant context from the user's indexed notes:\n" + note)
-    msgs = eng.build_messages(session, category, extras)
+        base_extras.append("Relevant context from the user's indexed notes:\n" + note)
     # count cookbook recipes pulled in (for the meta badge)
     recipes = len(eng.cookbook_retrieve(text)) if category in ("build", "agent") else 0
+    # detect web intent early (cheap) so gen() can signal the UI before the fetch
+    _web_kind = eng.has_web_intent(text)
 
     def gen():
+        extras = list(base_extras)
+        web_kind = _web_kind
+        if web_kind and SKILLS:
+            yield _sse({"type": "searching", "kind": web_kind})
+            _kind, web_ctx = eng.web_intent_fetch(text, SKILLS)
+            if web_ctx:
+                extras.append(web_ctx)
+        msgs = eng.build_messages(session, category, extras)
         yield _sse({"type": "meta", "model": model, "category": category,
-                    "notes": len(hits), "recipes": recipes})
+                    "notes": len(hits), "recipes": recipes,
+                    "searched": bool(web_kind and SKILLS)})
         parts = []
         try:
             for chunk in ollama.chat(model=model, messages=msgs, stream=True):
@@ -2935,17 +2945,23 @@ async function sendChat(txt, bubble) {
       if (!line.startsWith('data: ')) continue;
       let e;
       try { e = JSON.parse(line.slice(6)); } catch { continue; }
-      if (e.type === 'meta') {
+      if (e.type === 'searching') {
+        const lbl = e.kind === 'youtube' ? 'transcript' : e.kind === 'url' ? 'reading page' : 'searching web';
+        who.textContent = 'ai · ' + lbl + '...';
+        bubble.textContent = e.kind === 'youtube' ? 'Fetching transcript...' : e.kind === 'url' ? 'Reading page...' : 'Searching the web...';
+      } else if (e.type === 'meta') {
         lastCat = e.category || '';
-        who.textContent = `ai · ${e.category} · ${e.model}`
-          + (e.notes ? ` · +${e.notes} notes` : '')
-          + (e.recipes ? ` · ⚒ ${e.recipes} recipes` : '');
+        who.textContent = 'ai · ' + e.category + ' · ' + e.model
+          + (e.notes ? ' · +' + e.notes + ' notes' : '')
+          + (e.recipes ? ' · ⚒ ' + e.recipes + ' recipes' : '')
+          + (e.searched ? ' · web' : '');
+        if (bubble.textContent.endsWith('...')) bubble.textContent = 'Thinking...';
       } else if (e.type === 'token') {
         acc += e.text;
         bubble.innerHTML = fmt(acc);
         scrollMsgs();
       } else if (e.type === 'error') {
-        bubble.innerHTML = `<span style="color:var(--err)">${esc(e.text)}</span>`;
+        bubble.innerHTML = '<span style="color:var(--err)">' + esc(e.text) + '</span>';
       }
     }
   }
