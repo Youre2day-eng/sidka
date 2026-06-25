@@ -874,10 +874,14 @@ _PREVIEW_HARNESS = """<script>
   }
   window.addEventListener('error',function(e){
     var loc=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';
-    report((e.message||'Script error')+loc);
+    var msg=e.message||(e.error&&(e.error.message||e.error.stack))||
+            (e.target&&e.target.src&&('Failed to load '+e.target.src))||
+            'Uncaught error (no message — likely a null/undefined reference)';
+    report(String(msg)+loc);
   },true);
   window.addEventListener('unhandledrejection',function(e){
-    report('Unhandled promise rejection: '+((e.reason&&e.reason.message)||e.reason));
+    var r=e.reason;
+    report('Unhandled promise rejection: '+((r&&(r.message||r.stack))||r||'(no reason)'));
   });
 })();
 </script>"""
@@ -948,6 +952,22 @@ def api_cookbook_list():
     """List recipes (id/title/kind/source/tags) for inspection in the UI."""
     return jsonify([{k: r.get(k) for k in ("id", "title", "kind", "source", "tags", "lang", "verified")}
                     for r in eng.load_cookbook()])
+
+
+@app.route("/api/preview/diagnose", methods=["POST"])
+def api_preview_diagnose():
+    """Run an artifact through the headless verifier and return the PRECISE runtime
+    error (e.g. 'Cannot read properties of null...'), far more reliable than the
+    browser's often-empty error event. Used by the 'Fix it' button."""
+    d = request.get_json(force=True) or {}
+    code = d.get("html") or d.get("code") or ""
+    if not code.strip():
+        return jsonify(ok=False, error="(no code to diagnose)")
+    try:
+        ok, detail = eng.grow_verify(code)
+    except Exception as e:
+        return jsonify(ok=False, error=f"(diagnose failed: {e})")
+    return jsonify(ok=ok, error="" if ok else detail)
 
 
 @app.route("/api/cookbook/grow", methods=["POST"])
@@ -2546,7 +2566,7 @@ window._artifacts = window._artifacts || {};
 let _artifactSeq = 0;
 
 // surface JS errors as a visible overlay inside the inline iframe (not a black void)
-const _PREVIEW_HARNESS = `<script>(function(){function report(m){var d=document.getElementById('__sidka_err__');if(!d){d=document.createElement('div');d.id='__sidka_err__';d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';(document.body||document.documentElement).appendChild(d);}d.textContent='\\u26a0 '+m;try{window.parent.postMessage({type:'sidka-preview-error',msg:m},'*');}catch(x){}}window.addEventListener('error',function(e){var l=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';report((e.message||'Script error')+l);},true);window.addEventListener('unhandledrejection',function(e){report('Unhandled rejection: '+((e.reason&&e.reason.message)||e.reason));});})();<\/script>`;
+const _PREVIEW_HARNESS = `<script>(function(){function report(m){var d=document.getElementById('__sidka_err__');if(!d){d=document.createElement('div');d.id='__sidka_err__';d.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#2a0d0d;color:#ffb4b4;font:12px/1.5 ui-monospace,Menlo,monospace;padding:10px 14px;border-top:2px solid #e05050;white-space:pre-wrap;max-height:45%;overflow:auto';(document.body||document.documentElement).appendChild(d);}d.textContent='\\u26a0 '+m;try{window.parent.postMessage({type:'sidka-preview-error',msg:m},'*');}catch(x){}}window.addEventListener('error',function(e){var l=e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+':'+e.colno+')':'';var m=e.message||(e.error&&(e.error.message||e.error.stack))||(e.target&&e.target.src&&('Failed to load '+e.target.src))||'Uncaught error (no message - likely a null/undefined reference)';report(String(m)+l);},true);window.addEventListener('unhandledrejection',function(e){var r=e.reason;report('Unhandled rejection: '+((r&&(r.message||r.stack))||r||'(no reason)'));});})();<\/script>`;
 function injectHarness(html) {
   if (html.indexOf('__sidka_err__') !== -1) return html;
   const m = html.match(/<head[^>]*>/i);
@@ -3705,12 +3725,43 @@ function dismissPreviewErr() {
   _lastPreviewErr = '';
 }
 
+// the code of the most-recently previewed HTML artifact (for precise diagnosis)
+function _latestPreviewCode() {
+  const a = window._artifacts['art_' + _artifactSeq];
+  if (a && a.kind === 'html') return a.code;
+  for (let i = _artifactSeq; i >= 1; i--) {
+    const x = window._artifacts['art_' + i];
+    if (x && x.kind === 'html') return x.code;
+  }
+  return '';
+}
+
 async function fixPreviewError() {
-  if (!_lastPreviewErr) return;
   dismissPreviewErr();
-  // compose a targeted fix request and submit it as a chat message
+  let err = _lastPreviewErr;
+  const code = _latestPreviewCode();
+  // The browser error event is often empty/'Script error'. Re-run the artifact
+  // through the headless verifier to get the exact runtime error.
+  if (code && (!err || err === 'Script error' || /no message/i.test(err))) {
+    try {
+      const r = await fetch('/api/preview/diagnose', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ html: code })
+      });
+      const j = await r.json();
+      if (j && j.error) err = j.error;
+    } catch (e) {}
+  }
   const inp = $('#input');
-  inp.value = 'The preview just threw this error: "' + _lastPreviewErr + '". Please fix the code and show the corrected version.';
+  if (err) {
+    inp.value = 'The live preview threw this error: "' + err + '". Fix the bug and show the '
+              + 'corrected, complete HTML document. Keep everything in one self-contained file '
+              + 'and make sure it runs with no console errors.';
+  } else {
+    inp.value = 'The live preview rendered blank / did not run. Review the last HTML artifact for '
+              + 'common faults (script running before its elements exist, an undefined variable in '
+              + 'the loop, a function defined but never called) and show the corrected complete file.';
+  }
   await send();
 }
 
