@@ -1764,6 +1764,11 @@ button.err-btn { background: var(--err); color: #1a0202; }
 .html-preview { margin: 8px 0; border-radius: 8px; overflow: hidden; border: 1px solid #2a2a2a; background: #111; }
 .html-preview iframe { width: 100%; border: none; display: block; min-height: 320px; background: #111; }
 .code-header { font-size: 10px; letter-spacing: 0.8px; color: #555; padding: 6px 12px 0; text-transform: uppercase; font-weight: 600; }
+.building-card { display:flex; align-items:center; gap:10px; margin:8px 0; padding:12px 16px; border-radius:10px;
+  background:#161a22; border:1px solid #252a36; font-size:13px; color:#cdd3df; }
+.building-spinner { display:inline-block; animation:sidka-spin 1.4s linear infinite; font-size:15px; }
+@keyframes sidka-spin { to { transform: rotate(360deg); } }
+.streaming-pre { max-height:120px; overflow:hidden; opacity:.55; margin:2px 0 8px; font-size:11px; }
 .tool-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .tool-tag {
   font-size: 10px;
@@ -2536,13 +2541,40 @@ function fmt(t) {
     parts.push({k: 'code', lang: (m[1] || '').toLowerCase(), v: m[2]});
     last = re.lastIndex;
   }
-  if (last < t.length) parts.push({k: 'text', v: t.slice(last)});
+  if (last < t.length) {
+    const tail = t.slice(last);
+    // an UNCLOSED ``` fence = an artifact still streaming. Don't dump raw source —
+    // show a compact "building" card; the live preview replaces it when complete.
+    const open = tail.match(/```(\w*)\n([\s\S]*)$/);
+    if (open) {
+      if (open.index > 0) parts.push({k: 'text', v: tail.slice(0, open.index)});
+      parts.push({k: 'streaming', lang: (open[1] || '').toLowerCase(), v: open[2]});
+    } else {
+      parts.push({k: 'text', v: tail});
+    }
+  }
 
   return parts.map(p => {
     if (p.k === 'text') {
       return esc(p.v)
         .replace(/\*\*(.+?)\*\*/g, (_, x) => `<strong>${x}</strong>`)
         .replace(/`([^`]+)`/g, (_, c) => `<code>${esc(c)}</code>`);
+    }
+    if (p.k === 'streaming') {
+      // artifact still generating — compact card, not a wall of source
+      const isApp = p.lang === 'html' || p.lang === 'svg';
+      const title = (p.v.match(/<title[^>]*>([^<]+)<\/title>/i) || [])[1] || '';
+      const lines = p.v.split('\n').length;
+      if (isApp) {
+        return `<div class="building-card">`
+             + `<span class="building-spinner">⚙</span> `
+             + `<span>Building${title ? ' <b>' + esc(title) + '</b>' : ' app'}… `
+             + `<span style="opacity:.6">${lines} lines — live preview appears when ready</span></span></div>`;
+      }
+      // non-app code: show a short capped tail so it isn't a giant wall
+      const tailLines = p.v.split('\n').slice(-6).join('\n');
+      return `<div class="code-header">${esc(p.lang || 'code')} · writing…</div>`
+           + `<pre class="streaming-pre">${esc(tailLines)}</pre>`;
     }
     const lang = p.lang;
     if (lang === 'svg') {
@@ -2889,7 +2921,7 @@ async function sendChat(txt, bubble) {
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
-  let buf = '', acc = '';
+  let buf = '', acc = '', lastCat = '';
   const who = bubble.parentElement.querySelector('.who');
 
   while (true) {
@@ -2904,6 +2936,7 @@ async function sendChat(txt, bubble) {
       let e;
       try { e = JSON.parse(line.slice(6)); } catch { continue; }
       if (e.type === 'meta') {
+        lastCat = e.category || '';
         who.textContent = `ai · ${e.category} · ${e.model}`
           + (e.notes ? ` · +${e.notes} notes` : '')
           + (e.recipes ? ` · ⚒ ${e.recipes} recipes` : '');
@@ -2917,6 +2950,19 @@ async function sendChat(txt, bubble) {
     }
   }
   chatLog(bubble);
+  // A build that produced an app should RUN, not just sit as code — auto-open it.
+  if ((lastCat === 'build' || /```html/i.test(acc)) && /```html/i.test(acc)) {
+    const id = _latestHtmlArtifactId();
+    if (id) { try { await openLivePreview(id); } catch (e) {} }
+  }
+}
+
+function _latestHtmlArtifactId() {
+  for (let i = _artifactSeq; i >= 1; i--) {
+    const x = window._artifacts['art_' + i];
+    if (x && x.kind === 'html') return 'art_' + i;
+  }
+  return null;
 }
 
 // ---- send dispatcher ----
