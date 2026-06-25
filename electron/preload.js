@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('sidka', {
   // pull an Ollama model — resolves when done, rejects on failure
   pullModel: (model) => ipcRenderer.invoke('pull-model', model),
 
+  // is a model already installed? (HTTP API check, no download needed)
+  hasModel: (model) => ipcRenderer.invoke('has-model', model),
+
   // tell main process the wizard is done → close wizard, open main window
   wizardComplete: () => ipcRenderer.send('wizard-complete'),
 });

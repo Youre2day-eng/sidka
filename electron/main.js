@@ -48,6 +48,7 @@ function startServer() {
     ...process.env,
     RUNAI_WEB_MODE: '1',
     PYTHONPATH: path.dirname(script),
+    PATH: richPath(),  // so the server (and any tool it shells out to) can find node/ollama
   };
 
   console.log('[sidka] starting server:', py, script);
@@ -174,6 +175,28 @@ function isOllamaRunning() {
   });
 }
 
+// macOS GUI apps inherit a minimal PATH (no /usr/local/bin, /opt/homebrew/bin),
+// so `spawn('ollama')` throws ENOENT. Resolve the binary's real path instead.
+function ollamaBin() {
+  const candidates = [
+    '/usr/local/bin/ollama',
+    '/opt/homebrew/bin/ollama',
+    '/Applications/Ollama.app/Contents/Resources/ollama',
+    path.join(os.homedir(), '.ollama', 'ollama'),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch {}
+  }
+  return 'ollama'; // last resort: hope it's on PATH
+}
+
+// A PATH that includes the usual binary dirs, for any child process we spawn.
+function richPath() {
+  const extra = ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin'];
+  const cur = (process.env.PATH || '').split(':');
+  return [...new Set([...extra, ...cur])].filter(Boolean).join(':');
+}
+
 function ensureRunaiDirs() {
   for (const d of [RUNAI, SESSIONS, path.join(RUNAI, 'skills')]) {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
@@ -211,8 +234,24 @@ ipcMain.on('open-url', (_, url) => shell.openExternal(url));
 
 ipcMain.handle('check-ollama', isOllamaRunning);
 
+// Is a model already pulled? Query the daemon's HTTP API (no binary needed),
+// so the wizard can skip a multi-GB re-download of something already present.
+ipcMain.handle('has-model', (_, model) => new Promise(resolve => {
+  http.get('http://127.0.0.1:11434/api/tags', res => {
+    let body = '';
+    res.on('data', d => body += d);
+    res.on('end', () => {
+      try {
+        const names = (JSON.parse(body).models || []).map(m => m.name || m.model || '');
+        const want = String(model).split(':')[0];
+        resolve(names.some(n => n === model || n.split(':')[0] === want));
+      } catch { resolve(false); }
+    });
+  }).on('error', () => resolve(false));
+}));
+
 ipcMain.handle('pull-model', (_, model) => new Promise((resolve, reject) => {
-  const proc  = spawn('ollama', ['pull', model]);
+  const proc  = spawn(ollamaBin(), ['pull', model], { env: { ...process.env, PATH: richPath() } });
   const lines = [];
   proc.stdout.on('data', d => lines.push(d.toString().trim()));
   proc.stderr.on('data', d => lines.push(d.toString().trim()));

@@ -262,6 +262,17 @@ function selectModel(model) {
 
 async function startPull() {
   showStep(3);
+
+  // Already installed? Skip the multi-GB download entirely.
+  if (await window.sidka.hasModel(chosenModel)) {
+    setProgress(100);
+    document.getElementById('pullModelName').textContent = chosenModel + ' is already installed.';
+    document.getElementById('progressLabel').textContent = 'Already installed!';
+    document.getElementById('modelReadyLabel').textContent = chosenModel + ' ready';
+    setTimeout(() => showStep(4), 600);
+    return;
+  }
+
   document.getElementById('pullModelName').textContent =
     `Downloading ${chosenModel} — this may take a few minutes.`;
 
