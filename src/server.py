@@ -35,7 +35,7 @@ sys.path.insert(0, _here)
 from platform_shell import PLATFORM_INFO, projects_root, normalize_path  # noqa: E402
 
 # Reuse the terminal engine (models, router, skills, sessions, RAG).
-sys.path.insert(0, os.path.expanduser("~"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import manager as eng  # noqa: E402
 
 RUNAI_DIR        = eng.RUNAI_DIR

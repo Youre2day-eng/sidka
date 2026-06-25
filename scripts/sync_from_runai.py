@@ -38,6 +38,13 @@ def patch_web(text):
         "import manager_v6 as eng  # noqa: E402",
         "import manager as eng  # noqa: E402",
     )
+    # 1b. CRITICAL: dev inserts ~ on sys.path to find manager_v6 in $HOME, but in
+    # the bundle that lets an OLD ~/manager.py (v1 CLI) shadow our server/manager.py.
+    # Point the insert at the script's own dir so it imports the co-located engine.
+    text = text.replace(
+        'sys.path.insert(0, os.path.expanduser("~"))',
+        "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))",
+    )
     # 2. inject platform_shell import right after the WEB_MODE env signal
     anchor = 'os.environ["RUNAI_WEB_MODE"] = "1"\n'
     if anchor in text and "from platform_shell import" not in text:
